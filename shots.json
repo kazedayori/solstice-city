@@ -1,5 +1,6 @@
 [
-  { "name": "1-start.jpg", "query": "?shot=start&seed=1" },
-  { "name": "2-play.jpg", "query": "?shot=play&seed=1" },
-  { "name": "3-end.jpg", "query": "?shot=end&seed=1" }
+  { "name": "01-drive-cover.jpg", "query": "?shot=drive&seed=2" },
+  { "name": "02-city-night.jpg", "query": "?shot=city&seed=2" },
+  { "name": "03-police-chase.jpg", "query": "?shot=police&seed=2" },
+  { "name": "04-mission-action.jpg", "query": "?shot=mission&seed=2" }
 ]
