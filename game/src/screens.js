@@ -1,7 +1,7 @@
 // Screens & flow: title, briefing, pause, Wasted, Busted, mission passed.
 // The game object owns `state`; this module only draws overlays and reacts to
 // confirm keys on the same Input the simulation uses.
-import { FIELD, FONT, ECONOMY } from './config.js';
+import { FIELD, FONT, FONT_MONO, STEP } from './config.js';
 
 export function drawScreens(ctx, game, a) {
   switch (game.state) {
@@ -45,7 +45,7 @@ function drawTitle(ctx, game) {
   ctx.fillText(hasSave ? 'ENTER — CONTINUE    N — NEW GAME    M — MUTE' : 'ENTER — NEW GAME    M — MUTE', cx, 486);
   ctx.fillStyle = 'rgba(255,255,255,0.72)';
   ctx.font = `13px ${FONT}`;
-  ctx.fillText('WASD move · SHIFT sprint · MOUSE aim · SPACE/CLICK fire · Q weapon · E interact · R car', cx, 516);
+  ctx.fillText('WASD move · SHIFT sprint · MOUSE aim · SPACE/CLICK attack · F kick · Q weapon · E interact · R car', cx, 516);
   ctx.fillText('IN A CAR: WASD drive · SPACE handbrake · F5 quick-save · ESC pause', cx, 540);
   ctx.textAlign = 'left';
 }
@@ -78,14 +78,34 @@ function panel(ctx, x, y, w, h) {
 
 function drawPause(ctx, game) {
   shade(ctx, 0.62);
+  panel(ctx, 350, 169, 580, 382);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#fff';
   ctx.font = `900 54px ${FONT}`;
-  ctx.fillText('PAUSED', 640, 300);
-  ctx.font = `500 16px ${FONT}`;
-  ctx.fillStyle = '#ffd9a0';
-  ctx.fillText('ESC — RESUME   ·   F5 — SAVE   ·   L — LOAD   ·   M — MUTE', 640, 372);
-  ctx.fillText(`MISSIONS PASSED: ${game.missions.done.length} / ${game.missions.list.length}    CASH $${game.player.money}`, 640, 402);
+  ctx.fillText('PAUSED', 640, 241);
+  const seconds = Math.floor(game.session.playTicks * STEP);
+  const playTime = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+    .map((part) => String(part).padStart(2, '0')).join(':');
+  const stats = [
+    ['MISSIONS COMPLETED', `${game.missions.done.length} / ${game.missions.list.length}`],
+    ['CASH', `$${game.player.money}`],
+    ['PEAK WANTED THIS SESSION', `${game.session.peakWanted} / 5 STARS`],
+    ['ACTIVE PLAY TIME', playTime],
+  ];
+  for (const [i, [label, value]] of stats.entries()) {
+    const y = 318 + 41 * i;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#d9cddf';
+    ctx.font = `600 13px ${FONT}`;
+    ctx.fillText(label, 400, y);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffd9a0';
+    ctx.font = `600 16px ${FONT_MONO}`;
+    ctx.fillText(value, 880, y);
+  }
+  ctx.textAlign = 'center';
+  ctx.font = `500 14px ${FONT}`;
+  ctx.fillText('ESC — RESUME   ·   F5 — SAVE   ·   L — LOAD   ·   M — MUTE', 640, 516);
   ctx.textAlign = 'left';
 }
 
@@ -146,7 +166,7 @@ export function handleScreens(game, a, dt) {
     case 'paused':
       if (a.pause) { game.state = 'play'; return true; }
       if (a.save) { game.save(); return true; }
-      if (hit('KeyL')) { game.load(); game.notify('SAVE LOADED'); return true; }
+      if (hit('KeyL')) { game.notify(game.load() ? 'SAVE LOADED' : 'NO SAVE TO LOAD'); return true; }
       if (hit('KeyM')) { game.toggleMute(); return true; }
       break;
     case 'wasted':

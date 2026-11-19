@@ -1,5 +1,10 @@
 node_modules/
 out/
+out-verify*/
 out-serve.log
 *.log
 .DS_Store
+/BUILD-DONE
+/BATCH-1-DONE
+/BATCH-2-DONE
+/BUILD-DONE-2

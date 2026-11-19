@@ -1,33 +1,34 @@
 // Math helpers, the game object, and the fixed-step main loop that owns it.
 // Every subsystem registers onto `game`; this file and index.html are the only
 // entry points. Screens gate the simulation; the world keeps running on title.
-import { FIELD, STEP, MAX_FRAME, WORLD, DAY, SAVE_KEY } from './config.js';
+import { FIELD, STEP, MAX_FRAME, WORLD, DAY, SAVE_KEY, STAMINA, DRIVE_CAMERA, DRIFT_MARKS, MARINA_GULLS } from './config.js';
 import { makeRng, seedFromUrl } from './rng.js';
 import { buildCity } from './city.js';
 import { Camera } from './camera.js';
 import { Input } from './input.js';
 import { createPlayer, updatePlayer } from './player.js';
-import { createVehicle, maintainTraffic, updateVehicles } from './vehicles.js';
+import { maintainTraffic, updateVehicles } from './vehicles.js';
 import { createPed, updatePeds, maintainPeds, damagePed, scareNearPeds } from './pedestrians.js';
-import { createPoliceState, maintainPolice, updatePolice, damageCop, reportCrime, coolDown } from './police.js';
+import { createPoliceState, maintainPolice, updatePolice, damageCop, reportCrime, coolDown, resetPolice } from './police.js';
 import { updateBullets, updatePickups } from './combat.js';
-import { createMissions, updateMissions, missionTargetMarker, missionInteract, startMission } from './missions.js';
+import { createMissions, updateMissions, missionTargetMarker, missionInteract } from './missions.js';
 import { createEffects, updateEffects, effectsApi } from './effects.js';
 import { createAudio, audioApi } from './audio.js';
 import { render } from './render.js';
 import { drawScreens, handleScreens } from './screens.js';
-import { shotFromUrl, stageShot, finalizeShot } from './shots.js';
+import { shotFromUrl, stageShot, updateShotInput, finalizeShot } from './shots.js';
 
 function createGame(canvas) {
   const seed = seedFromUrl();
   const rng = makeRng(seed);
   const city = buildCity(rng);
-  const effects = createEffects();
+  const visualRng = makeRng(seed ^ 0x51f15e);
+  const effects = createEffects(visualRng.next01);
   const audio = createAudio();
 
   const game = {
     seed, rng, city, effects, audio,
-    camera: new Camera(city),
+    camera: new Camera(city, visualRng.next01),
     input: new Input(canvas),
     canvas, ctx: canvas.getContext('2d'),
     state: 'title',
@@ -39,13 +40,21 @@ function createGame(canvas) {
     missionMarker: null,
     lastFee: 250, lastFine: 250, lastPay: 0,
     memSave: null,
+    session: { playTicks: 0, peakWanted: 0 },
+
+    resetSprint() {
+      Object.assign(this.input, { stamina: STAMINA.capacity, exhausted: false, recoveryDelay: 0, onFoot: true });
+    },
 
     notify(text, color) {
       this.notifyList.push({ text, t: 0, color });
       if (this.notifyList.length > 4) this.notifyList.shift();
     },
 
-    reportCrime(kind, x, y) { reportCrime(this, kind, x, y); },
+    reportCrime(kind, x, y) {
+      reportCrime(this, kind, x, y);
+      this.session.peakWanted = Math.max(this.session.peakWanted, this.wanted);
+    },
     scarePeds(x, y, r) { scareNearPeds(this, x, y, r); },
     toggleMute() {
       const m = audioApi.mute(this.audio);
@@ -107,27 +116,31 @@ function createGame(canvas) {
       if (!raw) return false;
       try {
         const d = JSON.parse(raw);
-        const p = this.player;
-        p.x = d.x; p.y = d.y;
+        if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) return false;
+        const p = this.player = createPlayer(d.x, d.y);
         p.health = d.health ?? 100; p.armor = d.armor ?? 0;
         p.money = d.money ?? 350;
         p.weapon = d.weapon ?? 'pistol';
         p.weapons = d.weapons ?? p.weapons;
-        p.inCar = null; p.dead = false;
+
         this.missions.index = d.missionIndex ?? 0;
         this.missions.done = d.done ?? [];
         this.missions.active = null;
         this.time = d.time ?? DAY.start * DAY.length;
-        this.wanted = 0; this.heat = 0;
-        this.police.length = 0;
-        for (const v of [...this.vehicles]) if (v.mission) v.dead = true;
+        resetPolice(this);
+        for (const v of this.vehicles) if (v.mission || v.driver === 'player') v.dead = true;
         this.vehicles = this.vehicles.filter((v) => !v.dead);
+        this.bullets.length = 0;
+        this.resetSprint();
+        this.camera.cornerOn(p.x, p.y);
+        this.missionMarker = missionTargetMarker(this);
         return true;
       } catch (e) { return false; }
     },
 
     startNewGame(cont) {
       this.state = 'play';
+      this.session = { playTicks: 0, peakWanted: 0 };
       if (cont && this.load()) {
         this.notify('WELCOME BACK TO SOLSTICE CITY');
         this.camera.cornerOn(this.player.x, this.player.y);
@@ -135,13 +148,14 @@ function createGame(canvas) {
         return;
       }
       // Fresh start on a sidewalk by the central park.
-      this.player.x = nodeX(6) + 90;
-      this.player.y = nodeY(6) + 90;
-      this.player.health = 100; this.player.armor = 0;
-      this.vehicles.length = 0; this.peds.length = 0; this.police.length = 0;
+      this.player = createPlayer(nodeX(6) + 90, nodeY(6) + 90);
+      this.resetSprint();
+      resetPolice(this);
+      this.vehicles.length = 0; this.peds.length = 0;
       this.bullets.length = 0; this.pickups.length = 0;
       this.missions.index = 0; this.missions.done = []; this.missions.active = null;
-      this.wanted = 0; this.heat = 0;
+      this.time = DAY.start * DAY.length;
+      this.missionMarker = missionTargetMarker(this);
       this.camera.cornerOn(this.player.x, this.player.y);
       maintainTraffic(this, 0);
       maintainPeds(this);
@@ -152,6 +166,11 @@ function createGame(canvas) {
 
     resumeAfterScreen() {
       const p = this.player;
+      const abandoned = p.inCar;
+      if (this.state === 'passed') {
+        this.state = 'play';
+        return;
+      }
       if (this.state === 'wasted') {
         const fee = 250;
         this.lastFee = fee;
@@ -171,9 +190,13 @@ function createGame(canvas) {
         }
         p.inCar = null;
       }
-      this.police.length = 0;
-      this.wanted = 0; this.heat = 0;
-      for (const v of this.vehicles) if (v.cop && v.driver !== 'player') v.dead = true;
+      if (abandoned) {
+        abandoned.driver = null;
+        Object.assign(abandoned.ctrl, { throttle: 0, brake: 0, steer: 0, handbrake: false });
+      }
+      resetPolice(this);
+      this.bullets.length = 0;
+      this.resetSprint();
       this.vehicles = this.vehicles.filter((v) => !v.dead);
       this.camera.cornerOn(p.x, p.y);
       this.state = 'play';
@@ -202,6 +225,7 @@ function createGame(canvas) {
   game.bailOutPed = (g, x, y) => {
     const p = createPed(g, x, y);
     p.panicT = 3; p.panicX = x; p.panicY = y;
+    g.peds.push(p);
     return p;
   };
   game.damageCop = damageCop;
@@ -239,11 +263,16 @@ export function run(canvas) {
   let acc = 0;
   let titleT = 0;
   window.__game = game; // for the shot runner and debugging
+  Object.defineProperties(window.SOLSTICE ??= {}, {
+    stamina: { configurable: true, enumerable: true, get: () => input.stamina },
+    missionIndex: { configurable: true, enumerable: true, get: () => game.missions.index },
+    wanted: { configurable: true, enumerable: true, get: () => game.wanted },
+  });
 
   // Screenshot staging (?shot=name&seed=N): warm up, freeze, __shotReady.
   const shotName = shotFromUrl();
   const shotMode = !!shotName;
-  let shotSteps = shotMode ? 150 : 0;
+
   if (shotMode) {
     stageShot(game, shotName);
     window.__shotReady = false;
@@ -258,37 +287,57 @@ export function run(canvas) {
   addEventListener('resize', resize);
   resize();
 
-  function stepSim(dt) {
-    const a = input.actions();
+  function stepSim(dt, a) {
+    const p = game.player;
+    const walkBefore = p.walkT;
+    game.session.playTicks++;
+    game.session.peakWanted = Math.max(game.session.peakWanted, game.wanted);
     updatePlayer(game, a, dt);
+    input.updateStamina(dt, !p.inCar, walkBefore !== p.walkT);
+    if (a.mute) game.toggleMute();
     if (game.state !== 'play') return;
+    if (a.save) game.save();
     updateVehicles(game, dt);
+    if (p.inCar) { p.x = p.inCar.x; p.y = p.inCar.y; }
+    if (game.state !== 'play') return;
     maintainTraffic(game, dt);
     updatePeds(game, dt);
     maintainPeds(game);
     updatePolice(game, dt);
+    if (game.state !== 'play') return;
     maintainPolice(game, dt);
     game.spawnCooldown.copCar = Math.max(0, game.spawnCooldown.copCar - dt);
     updateBullets(game, dt);
+    if (game.state !== 'play') return;
     updatePickups(game, dt);
     coolDown(game, dt);
     updateMissions(game, dt);
+    game.session.peakWanted = Math.max(game.session.peakWanted, game.wanted);
     updateEffects(game.effects, dt);
     game.time += dt * 3.5;
 
-    const p = game.player;
-    const tx = p.inCar ? p.inCar.x + Math.cos(p.inCar.dir) * 60 : p.x;
-    const ty = p.inCar ? p.inCar.y + Math.sin(p.inCar.dir) * 60 : p.y;
+    const car = p.inCar;
+    const tx = car ? car.x + Math.cos(car.dir) * DRIVE_CAMERA.legacyLead : p.x;
+    const ty = car ? car.y + Math.sin(car.dir) * DRIVE_CAMERA.legacyLead : p.y;
     game.camera.zoom = 1;
     game.camera.center(tx, ty, dt * 1.2);
+    game.camera.followDriving(car, dt);
     game.camera.update(dt);
     game.missionMarker = missionTargetMarker(game);
 
-    audioApi.update(game.audio, {
-      nearSea: (p.inCar ? p.inCar.x : p.x) > WORLD.SAND_X - 240,
+    if (shotMode || game.state !== 'play') return;
+    const speed = Math.abs(car?.speed ?? 0);
+    const skid = car?.ctrl.handbrake && speed >= DRIFT_MARKS.minSpeed ? speed / car.T.maxSpeed : 0;
+    let gullDistance = Infinity;
+    if (p.x > WORLD.WATER_X - MARINA_GULLS.orbitX - MARINA_GULLS.hearingRange) {
+      for (const g of game.effects.gulls) gullDistance = Math.min(gullDistance, Math.hypot(g.x - p.x, g.y - p.y));
+    }
+    game.audio.streetAmbience(skid, gullDistance);
+    game.audio.update({
+      nearSea: p.x > WORLD.SAND_X - 240,
       stars: game.wanted,
       driving: !!p.inCar,
-      speed01: p.inCar ? Math.min(1, Math.abs(p.inCar.speed) / 430) : 0,
+      speed01: Math.min(1, speed / 430),
     });
   }
 
@@ -299,27 +348,22 @@ export function run(canvas) {
     const a = input.actions();
 
     if (shotMode) {
-      // Staged screenshot: run a fixed warm-up, freeze, paint, signal ready.
-      if (shotSteps > 0) shotSteps -= 1;
-      if (shotSteps === 0) {
-        shotSteps = -1; // frozen: never step the sim again
-        if (game.state === 'briefing') { game.state = 'play'; game.briefing = null; }
-        finalizeShot(game, shotName);
-        game.missionMarker = missionTargetMarker(game);
-        game.camera.update(0);
-        render(ctx, game);
-        render(ctx, game);
-        window.__shotReady = true;
-      } else if (shotSteps > 0) {
-        stepSim(STEP);
-        game.camera.update(STEP);
+      // A hidden or throttled tab must not change the warm-up step count.
+      for (let tick = 0; tick < 150 && game.state === 'play'; tick++) {
+        updateShotInput(game, shotName, tick);
+        stepSim(STEP, input.actions());
       }
+      finalizeShot(game, shotName);
+      game.missionMarker = missionTargetMarker(game);
+      game.camera.shake = game.camera.sx = game.camera.sy = 0;
       render(ctx, game);
-      requestAnimationFrame(frame);
+      render(ctx, game);
+      window.__shotReady = true;
       return;
     }
 
-    if (game.state === 'title') {
+    const before = game.state;
+    if (before === 'title') {
       if (!handleScreens(game, a, dtReal)) {
         titleT += dtReal;
         game.time += dtReal * 3;
@@ -336,13 +380,15 @@ export function run(canvas) {
         maintainPeds(game);
         updateEffects(game.effects, dtReal);
       }
-    } else if (game.state === 'play') {
+      input.endFrame();
+    } else if (before === 'play') {
       if (a.pause) { game.state = 'paused'; }
       else {
         acc += dtReal;
         let guard = 8;
         while (acc >= STEP && guard-- > 0) {
-          stepSim(STEP);
+          stepSim(STEP, { ...input.actions(), kick: input.hit('KeyF') });
+          input.endFrame(); // edges apply once, even when a paint spans multiple ticks
           acc -= STEP;
           if (game.state !== 'play') { acc = 0; break; }
         }
@@ -351,16 +397,24 @@ export function run(canvas) {
     } else {
       // briefing / paused / wasted / busted / passed — tick screens only.
       handleScreens(game, a, dtReal);
+      input.endFrame();
+    }
+    if (before === 'play' && game.state !== 'play') {
+      acc = 0;
+      input.endFrame();
+      game.audio.streetAmbience(0, Infinity);
+      if (game.audio.started) game.audio.update({ nearSea: false, stars: 0, driving: false, speed01: 0 });
     }
 
     for (const n of game.notifyList) n.t += dtReal * 0.34;
 
     render(ctx, game);
     drawScreens(ctx, game, a);
-    input.endFrame(); // clear per-frame key edges in EVERY state
+
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  if (shotMode) frame(last);
+  else requestAnimationFrame(frame);
 }
 
 run(document.getElementById('game'));

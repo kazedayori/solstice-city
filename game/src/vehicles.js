@@ -1,23 +1,28 @@
-// Vehicles: the shared top-down car model (all six classes), player driving,
+// Vehicles: the shared top-down car model, player driving,
 // node-hopping traffic AI, parked cars, collisions (car vs car, car vs ped,
 // car vs player) and damage/explosions.
-import { VEHICLE_TYPES, TRAFFIC, WORLD } from './config.js';
+import { VEHICLE_TYPES, TRAFFIC, WORLD, DRIFT_MARKS } from './config.js';
 import { buildingsNear, nearestNode, nodeAt } from './city.js';
-import { clamp } from './player.js';
-import { damagePlayer } from './player.js';
+import { clamp, damagePlayer } from './player.js';
 
 const clampAngle = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
 
 let nextId = 1;
+const BUS = { label: 'Sol Transit', L: 104, W: 30, mass: 3.8, maxSpeed: 203,
+  accel: 128, brake: 300, turn: 1.42, grip: 7.8, hp: 250, colors: ['#45a99b', '#d69540'] };
+// Fixed curbside stops on the cross-town and waterfront routes.
+const BUS_STOPS = [[2, 8, 0], [5, 4, 0], [6, 6, 1], [8, 10, 0], [11, 3, 1], [12, 8, 1]];
 
 export function createVehicle(game, type, x, y, dir, opts = {}) {
-  const T = VEHICLE_TYPES[type];
+  const T = type === 'bus' ? BUS : VEHICLE_TYPES[type];
   return {
     id: nextId++, type, T,
     x, y, dir,
     speed: opts.speed ?? 0,
     color: opts.color ?? game.rng.pick(T.colors),
     hp: opts.hp ?? T.hp,
+    maxHp: opts.hp ?? T.hp,
+    travelDir: dir, smokeT: 0,
     driver: opts.driver ?? null,   // 'player' | 'ai' | null
     ctrl: { throttle: 0, brake: 0, steer: 0, handbrake: false },
     ai: opts.ai ?? null,
@@ -32,25 +37,31 @@ export function createVehicle(game, type, x, y, dir, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Physics: scalar speed along the heading, arcade-stable. Turn authority scales
-// with speed and flips in reverse; handbrake cuts speed and boosts rotation.
+// Physics: the handbrake rotates the body faster than the travel heading.
+// On release the tires regain grip and bring the two headings together.
 // ---------------------------------------------------------------------------
 function integrateVehicle(game, v, dt) {
   const T = v.T, c = v.ctrl;
   if (c.throttle > 0) v.speed += T.accel * dt * (1 - Math.max(0, v.speed) / (T.maxSpeed * 1.12));
   if (c.brake > 0) {
     if (v.speed > 0) v.speed -= T.brake * dt;
-    else v.speed -= T.accel * 0.5 * dt;
+    else if (v.driver) v.speed -= T.accel * 0.5 * dt;
   }
   v.speed -= v.speed * 0.32 * dt;
-  if (c.handbrake) { v.speed -= v.speed * 2.6 * dt; }
+  if (c.handbrake) v.speed *= Math.exp(-(c.steer ? 0.95 : 2.8) * dt);
+  const sliding = c.handbrake && c.steer !== 0 && Math.abs(v.speed) >= DRIFT_MARKS.minSpeed;
   const authority = clamp(v.speed / 130, -1, 1);
-  v.dir += c.steer * T.turn * authority * dt * (c.handbrake ? 1.5 : 1);
+  v.dir = clampAngle(v.dir + c.steer * T.turn * authority * dt * (sliding ? 1.65 : 1));
+  const slip = clampAngle(v.dir - v.travelDir);
+  if (sliding) v.travelDir = v.dir - clamp(slip * Math.exp(-2.5 * dt), -1.15, 1.15);
+  else if (v.driver === 'player' && Math.abs(v.speed) > 40) v.travelDir += slip * (1 - Math.exp(-T.grip * dt));
+  else v.travelDir = v.dir;
+  v.travelDir = clampAngle(v.travelDir);
   v.speed = clamp(v.speed, -120, T.maxSpeed);
-  v.braking = c.brake > 0 && v.speed > 5;
+  v.braking = (c.brake > 0 || c.handbrake) && Math.abs(v.speed) > 5;
 
-  const nx = v.x + Math.cos(v.dir) * v.speed * dt;
-  const ny = v.y + Math.sin(v.dir) * v.speed * dt;
+  const nx = v.x + Math.cos(v.travelDir) * v.speed * dt;
+  const ny = v.y + Math.sin(v.travelDir) * v.speed * dt;
 
   if (vehicleHitsBuilding(game, nx, ny, v)) {
     const impact = Math.abs(v.speed);
@@ -67,14 +78,19 @@ function integrateVehicle(game, v, dt) {
   v.x = clamp(v.x, 14, WORLD.WATER_X - 14);
   v.y = clamp(v.y, 14, WORLD.H - 14);
 
-  if (Math.abs(v.speed) > 40) game.effects.tireTracks(v, Math.abs(c.steer) > 0 && Math.abs(v.speed) > 260);
+  if (Math.abs(v.speed) > 40) game.effects.tireTracks(v, sliding || (c.steer !== 0 && Math.abs(v.speed) > 260));
 }
 
 function vehicleHitsBuilding(game, x, y, v) {
-  const r = Math.max(v.T.L, v.T.W) * 0.38;
-  for (const b of buildingsNear(game.city, x, y, r + 8)) {
-    const cx = clamp(x, b.x, b.x + b.w), cy = clamp(y, b.y, b.y + b.h);
-    if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) return true;
+  const bus = v.type === 'bus';
+  const r = bus ? v.T.W * 0.56 : v.T.L * 0.38;
+  const cos = Math.cos(v.dir), sin = Math.sin(v.dir);
+  for (const b of buildingsNear(game.city, x, y)) {
+    for (const off of bus ? [-35, -18, 0, 18, 35] : [0]) {
+      const sx = x + cos * off, sy = y + sin * off;
+      const cx = clamp(sx, b.x, b.x + b.w), cy = clamp(sy, b.y, b.y + b.h);
+      if ((sx - cx) ** 2 + (sy - cy) ** 2 < r * r) return true;
+    }
   }
   return false;
 }
@@ -181,6 +197,7 @@ export function maintainTraffic(game, dt) {
     else if (v.parked) parked++;
   }
   game.vehicles = game.vehicles.filter((v) => !v.dead);
+  maintainBuses(game, px, py, dt);
 
   let guard = 20;
   while (civ < TRAFFIC.target && guard-- > 0) {
@@ -191,6 +208,25 @@ export function maintainTraffic(game, dt) {
   while (parked < 6 && guard-- > 0) {
     if (!spawnParked(game, px, py)) break;
     parked++;
+  }
+}
+
+function maintainBuses(game, px, py, dt) {
+  // Reserve a stop while its bus remains in the area, even after it is taken.
+  const cooldowns = game.busStopCooldowns ??= BUS_STOPS.map(() => 0);
+  for (let i = 0; i < BUS_STOPS.length; i++) {
+    cooldowns[i] = Math.max(0, cooldowns[i] - dt);
+    if (game.vehicles.some((v) => v.busStop === i)) continue;
+    const [c, r, vertical] = BUS_STOPS[i];
+    const curb = WORLD.ROAD - BUS.W / 2 - 2, mid = WORLD.CELL * 0.56;
+    const x = c * WORLD.CELL + (vertical ? curb : mid);
+    const y = r * WORLD.CELL + (vertical ? mid : curb);
+    const d = Math.hypot(x - px, y - py);
+    if (cooldowns[i] > 0 || d < 500 || d > 1150 || game.vehicles.some((v) => Math.hypot(v.x - x, v.y - y) < 76)) continue;
+    const bus = createVehicle(game, 'bus', x, y, vertical ? -Math.PI / 2 : 0, { parked: true });
+    bus.busStop = i;
+    game.vehicles.push(bus);
+    cooldowns[i] = 25;
   }
 }
 
@@ -240,11 +276,23 @@ function spawnParked(game, px, py) {
 // Damage, fire, explosions.
 // ---------------------------------------------------------------------------
 export function damageVehicle(game, v, amt, byPlayer) {
-  if (v.dead) return;
+  if (v.dead || amt <= 0) return;
   v.hp -= amt;
   if (byPlayer && v.cop) game.reportCrime('hitCopCar', v.x, v.y);
   if (v.hp <= 0) explodeVehicle(game, v, byPlayer);
-  else if (v.hp < v.T.hp * 0.45 && game.rng.chance(0.3)) game.effects.smoke(v.x, v.y);
+}
+
+function updateEngineSmoke(game, v, dt) {
+  const hp = v.hp / v.maxHp;
+  const stage = hp <= 0.19 ? 3 : hp <= 0.38 ? 2 : hp <= 0.64 ? 1 : 0;
+  if (stage !== v.smokeStage) { v.smokeStage = stage; v.smokeT = 0; }
+  if (!stage || (v.smokeT -= dt) > 0) return;
+  v.smokeT = [0, 0.65, 0.27, 0.12][stage];
+  const x = v.x + Math.cos(v.dir) * v.T.L * 0.35;
+  const y = v.y + Math.sin(v.dir) * v.T.L * 0.35;
+  game.effects.smoke(x, y);
+  if (stage >= 2) game.effects.smoke(x - 3, y + 3);
+  if (stage === 3 && game.rng.chance(0.24)) game.effects.metalSparks(x, y, 0.3);
 }
 
 export function explodeVehicle(game, v, byPlayer) {
@@ -277,6 +325,7 @@ export function updateVehicles(game, dt) {
     if (v.cop && v.ai && v.chase) { /* police chase steering handled in police.js */ }
     if (v.driver === 'ai') trafficThink(game, v, dt);
     integrateVehicle(game, v, dt);
+    if (!v.dead) updateEngineSmoke(game, v, dt);
   }
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
@@ -285,13 +334,17 @@ export function updateVehicles(game, dt) {
       const b = list[j];
       if (b.dead) continue;
       const dx = b.x - a.x, dy = b.y - a.y;
-      const dist = Math.hypot(dx, dy) || 0.01;
-      const minD = (Math.max(a.T.L, a.T.W) + Math.max(b.T.L, b.T.W)) * 0.42;
+      const dist = Math.hypot(dx, dy);
+      const ux = dist ? dx / dist : Math.cos(a.dir);
+      const uy = dist ? dy / dist : Math.sin(a.dir);
+      const minD = contactRadius(a, ux, uy) + contactRadius(b, ux, uy);
       if (dist < minD) {
-        const push = (minD - dist) / 2;
-        const ux = dx / dist, uy = dy / dist;
-        a.x -= ux * push; a.y -= uy * push;
-        b.x += ux * push; b.y += uy * push;
+        const massA = a.roadblock && !a.driver ? 3 : a.T.mass ?? 1;
+        const massB = b.roadblock && !b.driver ? 3 : b.T.mass ?? 1;
+        const pushA = (minD - dist) * massB / (massA + massB);
+        const pushB = minD - dist - pushA;
+        a.x -= ux * pushA; a.y -= uy * pushA;
+        b.x += ux * pushB; b.y += uy * pushB;
         const rel = Math.abs(a.speed - b.speed) * Math.min(1, Math.abs(Math.cos(a.dir - b.dir)) + 0.3);
         if (rel > 140) {
           const dmg = (rel - 140) * 0.05;
@@ -304,7 +357,8 @@ export function updateVehicles(game, dt) {
             game.camera.kick(Math.min(0.5, rel / 700));
             if (a.cop || b.cop) game.reportCrime('hitCopCar', (a.x + b.x) / 2, (a.y + b.y) / 2);
           }
-          a.speed *= 0.5; b.speed *= 0.5;
+          a.speed *= 0.38 + 0.24 * massA / (massA + massB);
+          b.speed *= 0.38 + 0.24 * massB / (massA + massB);
         }
       }
     }
@@ -314,13 +368,15 @@ export function updateVehicles(game, dt) {
     if (v.dead) continue;
     const sp = Math.abs(v.speed);
     if (sp < 4) continue;
-    const fx = Math.cos(v.dir), fy = Math.sin(v.dir);
+    const sign = Math.sign(v.speed);
+    const fx = Math.cos(v.dir) * sign, fy = Math.sin(v.dir) * sign;
+    const nose = v.T.L * 0.6 + 10;
     for (const p of game.peds) {
       if (p.dead) continue;
       const dx = p.x - v.x, dy = p.y - v.y;
-      if (dx * dx + dy * dy > 70 * 70) continue;
+      if (dx * dx + dy * dy > (nose + 16) ** 2) continue;
       const lat = Math.abs(-dx * fy + dy * fx), along = dx * fx + dy * fy;
-      if (along > -14 && along < v.T.L * 0.6 + 10 && lat < v.T.W * 0.5 + 10) {
+      if (along > -14 && along < nose && lat < v.T.W * 0.5 + 10) {
         if (sp > 95) {
           game.damagePed(game, p, 999, v.driver === 'player');
           game.effects.blood(p.x, p.y);
@@ -333,7 +389,7 @@ export function updateVehicles(game, dt) {
     const pl = game.player;
     if (!pl.inCar && !pl.dead) {
       const dx = pl.x - v.x, dy = pl.y - v.y;
-      if (dx * dx + dy * dy < 60 * 60) {
+      if (dx * dx + dy * dy < (nose + 16) ** 2) {
         const lat = Math.abs(-dx * fy + dy * fx), along = dx * fx + dy * fy;
         if (along > -12 && along < v.T.L * 0.6 + 8 && lat < v.T.W * 0.5 + 10) {
           if (sp > 120) {
@@ -346,6 +402,12 @@ export function updateVehicles(game, dt) {
     }
   }
   game.vehicles = list.filter((v) => !v.dead);
+}
+
+function contactRadius(v, x, y) {
+  if (v.type !== 'bus') return v.T.L * 0.42;
+  // Capsule footprint: full reach at the ends, narrow enough to pass curbside.
+  return v.T.W / 2 + (v.T.L - v.T.W) / 2 * Math.abs(x * Math.cos(v.dir) + y * Math.sin(v.dir));
 }
 
 /** Panic every civic car near a danger point (gunfire, explosions). */

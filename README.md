@@ -18,27 +18,27 @@ Then open <http://localhost:8080> (offline static server; any static host works)
 
 You're loose in Solstice City: a hand-built island grid of 13×13 blocks — **Neon Mile** strip with glowing signage at night, **Glass Row** tower canyon, a palm-lined **Marina Strip** beach, a central park, docklands and alleys — ringed by sand and an animated sea. Steal cars, run missions, make money, and outdrive the police when the stars start stacking.
 
-- **Drivable world** — every car in the city can be entered (`R`), driven, crashed and wrecked: sports cars, sedans, compacts, taxis, trucks, police cruisers. Traffic AI follows the road grid; pedestrians stroll, panic, bail out of hijacked cars and scatter.
-- **Combat & heat** — fists or a pistol (`Q` to switch), with tracers, muzzle flash, tire tracks, smoke and explosions. Crimes you commit raise your wanted level 1–5 stars; foot officers and cruisers with sirens escalate to match, ram you, shoot back, and *arrest* you if they corner you while you're hurt or stopped.
-- **Six missions** — a storyline told through briefings: *Cold Coffee* (steal a sedan from the pound), *Glass Rain* (shoot the courier's ID crates), *Overdue Debt*, *Last Train Out*, *Marina Lights* and a finale, each with its own staged scene, objectives, pay and **MISSION PASSED** card.
-- **Living city** — a full day/night cycle with dawn, dusk, starfield and building windows that light up at night; district-tinted blocks; waves on the shore; gulls; and a stylised sun that tracks the clock.
-- **Systems** — money, health, armor and weapon pickups, wanted decay when you break line of sight, save/continue (localStorage, `F5` to save, pause `Esc` → `L` to load), mute (`M`), pause menu, WASTED/BUSTED/MISSION PASSED screens, toasts, and a mission marker + minimap HUD.
+- **Drivable world** — take the wheel of sports cars, sedans, taxis, police cruisers and city buses. Traffic follows the road grid, with buses pausing at marked stops. Steer with the handbrake held to drift and leave curved skid marks; the camera looks ahead as you pick up speed.
+- **Combat & heat** — fists or a pistol (`Q` to switch), plus a kick (`F`) that staggers without raising heat. The wanted meter runs from one to five stars: officers pursue on foot, cruisers chase, and roadblocks can appear at three stars and above.
+- **Eight missions** — *Cold Coffee*, *Glass Rain*, *Sunset Freight*, *Neon Undertow*, *Static and Glass*, *Solstice Run*, *The Solstice Job* and *Afterglow*. The arc closes with a bank job and then a sunset drive along the marina.
+- **Living city** — joggers loop through parks and along the waterfront, gulls circle the piers, and the plaza fountain, rooftop billboards and dock cranes mark out the districts. The day/night cycle lights up windows and signs after dark. Synthesized audio includes tire screech, nearby gull calls and a mission-start sting.
+- **Systems** — sprint stamina drains as you run and recovers when you ease off. Pick up money, health, armor and ammo; track your mission progress, cash, peak wanted level and active play time in the pause menu. Save and continue locally (`F5` to save, `Esc` → `L` to load); mute with `M`.
 
 ## Screenshots
 
-Four in `screenshots/` (each 1280×720, staged by the deterministic shot runner — `?shot=<name>&seed=2` boots the real simulation, warms it up, freezes and paints one frame):
+Four in `screenshots/` (each 1280×720, rendered by the deterministic shot runner using the seeds in `shots.json`):
 
 | # | File | Shows |
 |---|------|-------|
 | 1 | `01-drive-cover.jpg` | golden-hour drive through the Glass Row tower canyon — the cover |
-| 2 | `02-city-night.jpg` | Neon Mile at night on foot: lit windows, neon signage, stars, wanted level up, cops closing |
-| 3 | `03-police-chase.jpg` | 3-star daylight chase: cruisers on the tail, panicked peds, tire marks, a smoking wreck |
-| 4 | `04-mission-action.jpg` | *Glass Rain* in progress: crates in the street, one already blown, muzzle flash and tracer mid-air |
+| 2 | `02-city-night.jpg` | Neon Mile at night on foot, with the police looking for you |
+| 3 | `03-police-chase.jpg` | A pursuit starts at three stars and escalates at a roadblock |
+| 4 | `04-mission-action.jpg` | *Glass Rain* in progress: crates in the street and a shot in flight |
 
 ## Layout
 
 ```
-game/            the whole game — index.html + src/*.js (17 modules, ~140 KB, no deps)
+game/            the whole game — index.html + src/*.js (no dependencies)
   src/config.js     every tuning number, colour and table in one place
   src/rng.js        seeded PRNG — same seed, same city
   src/city.js       the island: roads, blocks, districts, towers, palms, beach, sea
@@ -49,7 +49,7 @@ game/            the whole game — index.html + src/*.js (17 modules, ~140 KB, 
   src/pedestrians.js strolling & panicking peds
   src/police.js     wanted levels, officer & cruiser pursuit, arrest, spawn control
   src/combat.js     melee + gunplay, bullets, hit resolution
-  src/missions.js   six-mission storyline with objectives and markers
+  src/missions.js   eight-mission storyline with objectives and markers
   src/effects.js    muzzle flash, tracers, smoke, sparks, explosions, tire marks
   src/audio.js      WebAudio synth: engine hum, sirens, gunfire, gulls, waves
   src/render.js     the whole frame: city, entities, lighting, HUD
@@ -67,17 +67,18 @@ serve.ts         offline static server for local play
 | Key | Action |
 |-----|--------|
 | WASD / arrows | move / drive |
-| Shift | sprint |
-| Space / click | fire |
+| Shift | sprint (uses stamina) |
+| Space / click | attack on foot; Space is the handbrake while driving |
 | Q | switch weapon (fist ↔ pistol) |
+| F | kick on foot |
 | E | start mission at the gold marker |
 | R | enter / exit vehicle |
-| Esc | pause (save `F5`, load `L`, mute `M` in menus) |
+| Esc | pause (save `F5`, load `L`, mute `M`) |
 | Enter | confirm screens |
 
 ## Making the screenshots
 
-`shots.json` maps each file to a staging query. With `node serve.ts` running, opening `index.html?shot=drive&seed=2` etc. boots the game headlessly-staged: 150 warm-up steps of the real simulation, then the scene is pinned (time of day, pursuers, toasts, effects) and `window.__shotReady` flips; the canvas is serialised at exactly 1280×720.
+`shots.json` maps each file to a staging query. With `node serve.ts` running, open `index.html?shot=drive&seed=239` or use another query from the manifest. After 150 fixed steps of the real simulation, the camera and clock are pinned and `window.__shotReady` signals that the 1280×720 canvas is ready to capture.
 
 ## Entry
 

@@ -1,8 +1,10 @@
 // The city builder + all spatial queries: block contents from the seeded rng,
 // building collision lookup, road/lane geometry helpers.
-import { WORLD, DISTRICTS } from './config.js';
+import { WORLD, DISTRICTS, MARINA_GULLS } from './config.js';
+import { makeRng, pickWeighted, shuffle } from './rng.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const TAU = Math.PI * 2;
 
 export function districtAt(c, r) {
   for (const d of DISTRICTS) {
@@ -20,7 +22,7 @@ export function buildCity(rng) {
     parks: new Set(),
     parkBlocks: [],
     byCell: new Map(),
-    piers: [],
+    piers: [], fountainPlaza: null, billboards: [], cranes: [],
   };
   const addBuilding = (b) => {
     city.buildings.push(b);
@@ -39,9 +41,15 @@ export function buildCity(rng) {
       if (d.park) {
         city.parks.add(`${c},${r}`);
         city.parkBlocks.push({ c, r, x: bx, y: by });
-        if (rng.chance(0.5)) city.props.push({ type: 'fountain', x: bx + 120, y: by + 120, w: 56, h: 56, neonColor: 'cyan' });
+        rng.chance(0.5); // Preserve the original world RNG sequence after replacing the fountain roll.
+        const plaza = c === d.region.c0 && r === d.region.r0;
+        if (plaza) city.fountainPlaza = fountainAt(bx + WORLD.BLOCK / 2, by + WORLD.BLOCK / 2);
         for (let i = 0; i < 3; i++) city.props.push({ type: 'bench', x: bx + rng.int(20, 205), y: rng.chance(0.5) ? by + 16 : by + 214, w: 26, h: 10, neonColor: 'cyan' });
-        for (let i = 0; i < 4; i++) city.palms.push({ x: bx + rng.int(30, 200), y: by + rng.int(30, 200), h: rng.int(44, 64), lean: rng.range(-0.16, 0.16) });
+        for (let i = 0; i < 4; i++) {
+          const palm = { x: bx + rng.int(30, 200), y: by + rng.int(30, 200), h: rng.int(44, 64), lean: rng.range(-0.16, 0.16) };
+          if (plaza) { palm.x = bx + (i % 2 ? 212 : 28); palm.y = by + (i < 2 ? 208 : 38); }
+          city.palms.push(palm);
+        }
         continue;
       }
 
@@ -86,8 +94,52 @@ export function buildCity(rng) {
   for (let y = 40; y < city.H - 40; y += 54) {
     city.palms.push({ x: WORLD.SAND_X + rng.int(20, 260), y: y + rng.int(-14, 14), h: rng.int(52, 74), lean: rng.range(-0.25, 0.25) });
   }
-  city.piers = [0.18, 0.45, 0.78].map((f) => ({ x: WORLD.WATER_X - 10, y: city.H * f, w: 150, h: 34 }));
+  city.piers = MARINA_GULLS.pierFractions.map((f) => ({ x: WORLD.WATER_X - 10, y: city.H * f, w: 150, h: 34 }));
+  addLandmarks(city, makeRng(city.buildings[0]?.windowSeed ?? 0));
   return city;
+}
+
+function fountainAt(x, y) {
+  const radius = 70, basin = 38;
+  const paving = Array.from({ length: 24 }, (_, i) => ({
+    start: i * TAU / 24, end: (i + 1) * TAU / 24,
+    color: ['#c7a980', '#e1c69b', '#d4b68b'][i % 3],
+  }));
+  const jets = Array.from({ length: 8 }, (_, i) => ({
+    x: Math.cos(i * TAU / 8) * 24, y: Math.sin(i * TAU / 8) * 24, phase: i * TAU / 8,
+  }));
+  const lamps = Array.from({ length: 4 }, (_, i) => {
+    const angle = (i + 0.5) * TAU / 4;
+    return { x: Math.cos(angle) * (radius - 12), y: Math.sin(angle) * (radius - 12) };
+  });
+  return { x, y, radius, basin, paving, jets, lamps };
+}
+
+/** Scenery has its own stream so variants never shift spawns or collision geometry. */
+function addLandmarks(city, rng) {
+  const neon = DISTRICTS.find(({ id }) => id === 'neon').region;
+  const signs = shuffle([
+    ['LUMEN RADIO', '#78e9ff', 'wave'], ['AFTERGLOW', '#ff80ce', 'sun'], ['MIRAGE CLUB', '#e59aff', 'star'],
+    ['SODA SOL', '#ffe084', 'sun'], ['MOONPOOL', '#9af5b9', 'wave'], ['NIGHT FERRY', '#7fbaff', 'star'],
+  ], rng);
+  for (let c = neon.c0; c <= neon.c1; c++) {
+    for (let i = 0; i < 2; i++) {
+      const [label, color, motif] = signs[((c - neon.c0) * 2 + i) % signs.length];
+      city.billboards.push({ x: c * WORLD.CELL + WORLD.ROAD + 62 + i * 111,
+        y: (neon.r0 + 1) * WORLD.CELL + WORLD.ROAD + 23, w: 96, h: 26, label, color, motif,
+        chasePhase: rng.next() });
+    }
+  }
+
+  const docks = DISTRICTS.find(({ id }) => id === 'puerto').region;
+  const finishes = [{ value: '#dbaa53', weight: 3 }, { value: '#e28159', weight: 2 }];
+  for (let r = docks.r0; r <= docks.r1; r++) {
+    city.cranes.push({ x: (docks.c1 + 1) * WORLD.CELL - 28, y: r * WORLD.CELL + WORLD.ROAD + 148,
+      reach: rng.int(66, 86), height: rng.int(64, 78), phase: rng.range(0, Math.PI * 2),
+      color: pickWeighted(finishes, rng), number: r - docks.r0 + 1,
+      apron: { w: 43, h: 49 },
+      cargo: ['#935548', '#547885', '#6b8056'][r - docks.r0] });
+  }
 }
 
 // ---------------------------------------------------------------------------

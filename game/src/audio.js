@@ -2,10 +2,13 @@
 // synthesized from oscillators and noise buffers, so the whole game stays a
 // handful of static files. Everything routes through one master gain with a
 // mute toggle; the siren loops while stars are up.
+import { DRIFT_MARKS, MARINA_GULLS } from './config.js';
+
 export function createAudio() {
   const A = {
     ctx: null, master: null, muted: false, engineOsc: null, engineGain: null,
     sirenOsc: null, sirenGain: null, seaGain: null, started: false,
+    skidVoice: null, nextGull: 0, gullInRange: false,
   };
   return A;
 }
@@ -16,10 +19,10 @@ function ensureCtx(A) {
     if (!C) return null;
     A.ctx = new C();
     A.master = A.ctx.createGain();
-    A.master.gain.value = 0.55;
+    A.master.gain.value = A.muted ? 0 : 0.55;
     A.master.connect(A.ctx.destination);
   }
-  if (A.ctx.state === 'suspended') A.ctx.resume();
+  if (A.ctx.state === 'suspended') A.ctx.resume().catch(() => {});
   A.started = true;
   return A.ctx;
 }
@@ -31,11 +34,12 @@ function noiseBuffer(ctx, len = 0.4) {
   return buf;
 }
 
-function blip(A, { type = 'sine', f = 440, f2 = null, dur = 0.1, vol = 0.2, attack = 0.005 }) {
+function blip(A, { type = 'sine', f = 440, f2 = null, fPeak = null, dur = 0.1, vol = 0.2, attack = 0.005, delay = 0 }) {
   if (A.muted || !ensureCtx(A)) return;
-  const ctx = A.ctx, t = ctx.currentTime;
+  const ctx = A.ctx, t = ctx.currentTime + delay;
   const osc = ctx.createOscillator(), g = ctx.createGain();
   osc.type = type; osc.frequency.setValueAtTime(f, t);
+  if (fPeak) osc.frequency.exponentialRampToValueAtTime(fPeak, t + dur * 0.28);
   if (f2) osc.frequency.exponentialRampToValueAtTime(Math.max(1, f2), t + dur);
   g.gain.setValueAtTime(0, t);
   g.gain.linearRampToValueAtTime(vol, t + attack);
@@ -59,7 +63,7 @@ function noiseHit(A, { dur = 0.12, vol = 0.25, filter = 1200, type = 'lowpass' }
 }
 
 export const audioApi = {
-  start(A) { ensureCtx(A); this.siren(A, 0); this.sea(A); },
+  start(A) { ensureCtx(A); audioApi.siren(A, 0); audioApi.sea(A); },
   mute(A) { A.muted = !A.muted; if (A.master) A.master.gain.value = A.muted ? 0 : 0.55; return A.muted; },
 
   shot(A, kind) {
@@ -87,7 +91,62 @@ export const audioApi = {
   pickup(A) { blip(A, { type: 'sine', f: 660, dur: 0.07, vol: 0.14 }); setTimeout(() => blip(A, { type: 'sine', f: 990, dur: 0.09, vol: 0.14 }), 70); },
   enterCar(A) { noiseHit(A, { dur: 0.1, vol: 0.1, filter: 700 }); blip(A, { type: 'sine', f: 300, f2: 180, dur: 0.1, vol: 0.1 }); },
   exitCar(A) { noiseHit(A, { dur: 0.08, vol: 0.08, filter: 600 }); },
-  mission(A) { blip(A, { type: 'triangle', f: 392, dur: 0.12, vol: 0.16 }); setTimeout(() => blip(A, { type: 'triangle', f: 523, dur: 0.14, vol: 0.16 }), 130); },
+  mission(A) { audioApi.missionStart(A); },
+  missionStart(A) {
+    blip(A, { f: 196, f2: 98, dur: 0.29, vol: 0.17 });
+    [392, 466.16, 587.33].forEach((f, i) => blip(A, { type: 'triangle', f,
+      delay: i * 0.075, dur: i === 2 ? 0.36 : 0.16, attack: 0.012, vol: 0.13 }));
+  },
+  tireScreech(A, strength = 0.5) {
+    const ctx = A.ctx;
+    if (!ctx || ctx.state !== 'running') return;
+    const t = ctx.currentTime;
+    if (strength <= 0 || A.muted) {
+      if (!A.skidVoice) return;
+      const { source, tone, gain } = A.skidVoice;
+      gain.gain.setTargetAtTime(0, t, DRIFT_MARKS.screechRelease);
+      source.stop(t + 4 * DRIFT_MARKS.screechRelease);
+      tone.stop(t + 4 * DRIFT_MARKS.screechRelease);
+      A.skidVoice = null;
+      return;
+    }
+    if (!A.skidVoice) {
+      const source = ctx.createBufferSource(), filter = ctx.createBiquadFilter();
+      const tone = ctx.createOscillator(), toneLevel = ctx.createGain(), gain = ctx.createGain();
+      source.buffer = A.skidNoise ??= noiseBuffer(ctx, 0.8);
+      source.loop = true;
+      filter.type = 'bandpass'; filter.Q.value = 2.8;
+      tone.type = 'triangle'; toneLevel.gain.value = 0.21;
+      gain.gain.value = 0;
+      source.connect(filter).connect(gain);
+      tone.connect(toneLevel).connect(gain);
+      gain.connect(A.master);
+      source.start(); tone.start();
+      A.skidVoice = { source, filter, tone, gain };
+    }
+    const { filter, tone, gain } = A.skidVoice;
+    const s = Math.min(1, strength);
+    filter.frequency.setTargetAtTime(920 + 1050 * s, t, 0.06);
+    tone.frequency.setTargetAtTime(375 + 510 * s + 24 * Math.sin(t * 32), t, 0.045);
+    gain.gain.setTargetAtTime(0.065 + 0.13 * s, t, 0.045);
+  },
+  gullCry(A, volume = 0.04) {
+    blip(A, { type: 'triangle', f: 860, fPeak: 1500, f2: 720, dur: 0.19, vol: volume, attack: 0.028 });
+    blip(A, { type: 'triangle', f: 790, fPeak: 1280, f2: 580, dur: 0.21, vol: volume * 0.75, attack: 0.030, delay: 0.16 });
+  },
+  streetAmbience(A, skid, gullDistance) {
+    if (!A.started || A.ctx?.state !== 'running') return;
+    audioApi.tireScreech(A, skid);
+    if (A.muted) return;
+    const t = A.ctx.currentTime;
+    const near = gullDistance < MARINA_GULLS.hearingRange;
+    if (near && !A.gullInRange) A.nextGull = t + MARINA_GULLS.approachDelay;
+    if (near && t >= A.nextGull) {
+      audioApi.gullCry(A, 0.065 * (1 - gullDistance / MARINA_GULLS.hearingRange));
+      A.nextGull = t + MARINA_GULLS.callEvery + Math.random() * MARINA_GULLS.callJitter;
+    }
+    A.gullInRange = near;
+  },
   missionPass(A) {
     const notes = [392, 494, 587, 784];
     notes.forEach((f, i) => setTimeout(() => blip(A, { type: 'triangle', f, dur: 0.18, vol: 0.18 }), i * 120));
@@ -155,7 +214,7 @@ export const audioApi = {
     if (!A.started || A.muted) return;
     const { nearSea, stars, driving, speed01 } = opts;
     if (A.seaGain) A.seaGain.gain.value += ((nearSea ? 0.05 : 0) - A.seaGain.gain.value) * 0.02;
-    if (stars > 0 !== !!A.sirenOsc) this.siren(A, stars > 0 ? 1 : 0);
-    this.engine(A, speed01, driving);
+    if ((stars > 0) !== !!A.sirenOsc) audioApi.siren(A, stars > 0 ? 1 : 0);
+    audioApi.engine(A, speed01, driving);
   },
 };

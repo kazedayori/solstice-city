@@ -1,8 +1,6 @@
-// Missions & story: the Heart of the Sun arc — six missions across the city,
-// each with an on-map marker, objectives, briefing and payout. Missions chain
-// in order; the story wraps when the Sun of Bahía is delivered.
-import { WORLD, ECONOMY } from './config.js';
-import { onRoad } from './city.js';
+// Eight chapters in the Heart of the Sun arc. The same objective chain drives
+// gameplay, the HUD, map pins, payouts and autosaves.
+import { WORLD, DAY, MARINA_GULLS } from './config.js';
 import { createVehicle } from './vehicles.js';
 import { createPed } from './pedestrians.js';
 
@@ -10,9 +8,13 @@ import { createPed } from './pedestrians.js';
 function blockPoint(c, r) {
   return { x: c * WORLD.CELL + WORLD.ROAD / 2, y: r * WORLD.CELL + WORLD.ROAD / 2 };
 }
-function lotPoint(c, r, ox = 0, oy = 0) {
-  return { x: c * WORLD.CELL + WORLD.ROAD + ox, y: r * WORLD.CELL + WORLD.ROAD + oy };
+function waterfrontPoint(pier) {
+  return { x: WORLD.SAND_X + 110, y: WORLD.H * MARINA_GULLS.pierFractions[pier] };
 }
+
+const BANK = blockPoint(6, 4);
+const VAULT = { x: BANK.x + WORLD.CELL / 2, y: BANK.y };
+const SAFEHOUSE = blockPoint(2, 8);
 
 const MISSIONS = [
   {
@@ -66,6 +68,28 @@ const MISSIONS = [
     ],
     pay: 2500,
   },
+  {
+    id: 'm7', title: 'The Solstice Job', giver: 'MARISOL VEGA', offerAt: blockPoint(10, 10),
+    brief: 'MARISOL VEGA: The Sun of Bahía opened a door on Glass Row. Take a car to the bank, hold at the vault entrance, and bring the take back to Casco Viejo. Shake the sirens first.',
+    objectives: [
+      { kind: 'goto', drive: true, text: 'Drive to the Glass Row bank district', at: BANK },
+      { kind: 'hold', seconds: 4, text: 'Hold inside the vault zone', at: VAULT },
+      { kind: 'escape', maxStars: 1, text: 'Lose the heat (reach 1 star or less)', at: SAFEHOUSE },
+      { kind: 'goto', text: 'Return to the Casco Viejo safehouse', at: SAFEHOUSE },
+    ],
+    pay: 5000,
+  },
+  {
+    id: 'm8', title: 'Afterglow', giver: 'MARISOL VEGA', offerAt: SAFEHOUSE,
+    sunset: true, maxWanted: 0,
+    brief: 'MARISOL VEGA: No jobs tonight. Take one last drive along Bahía Dorada. Start at the north marina, follow the beach, and meet me at the last pier before the light goes.',
+    objectives: [
+      { kind: 'goto', drive: true, text: 'Drive to the north marina overlook', at: waterfrontPoint(0) },
+      { kind: 'goto', drive: true, text: 'Follow the shore to the Bahía beach promenade', at: waterfrontPoint(1) },
+      { kind: 'goto', drive: true, text: 'Catch the sunset at the south pier', at: waterfrontPoint(2) },
+    ],
+    pay: 200,
+  },
 ];
 
 export function createMissions(game) {
@@ -99,8 +123,8 @@ export function missionTargetMarker(game) {
   }
   if (m.index < m.list.length) {
     const d = m.list[m.index];
-    // Next mission's offer point: the first objective's location.
-    return { x: d.objectives[0].at.x, y: d.objectives[0].at.y, label: `MISSION ${m.index + 1}: ${d.title}` };
+    const at = d.offerAt ?? d.objectives[0].at;
+    return { ...at, label: `MISSION ${m.index + 1}: ${d.title}` };
   }
   return null;
 }
@@ -108,8 +132,14 @@ export function missionTargetMarker(game) {
 export function startMission(game) {
   const m = game.missions;
   if (m.active || m.index >= m.list.length) return;
-  const def = m.list[m.index];
+  const chapter = m.list[m.index];
+  // Clone objectives so live HUD text never changes the campaign definitions.
+  const def = { ...chapter, objectives: chapter.objectives.map((obj) => ({ ...obj })) };
   m.active = { def, step: 0 };
+  if (def.sunset) {
+    m.active.day = Math.floor(game.time / DAY.length) * DAY.length;
+    game.time = m.active.day + 0.72 * DAY.length;
+  }
   spawnMissionProps(game, m.active, def, 0);
   game.briefing = { text: def.brief, title: def.title, t: 0 };
   game.state = 'briefing';
@@ -173,18 +203,44 @@ function spawnMissionProps(game, act, def, step) {
 
 export function updateMissions(game, dt) {
   const m = game.missions;
-  if (!m.active || game.state !== 'play') return;
+  if (game.state !== 'play') return;
+  if (!m.active) {
+    if (m.epilogueT > 0 && (m.epilogueT -= dt) <= 0 && m.done.includes('m8')) {
+      game.notify('STORY COMPLETE — FREE ROAM', '#ffe9a3');
+    }
+    return;
+  }
   const act = m.active;
   const obj = act.def.objectives[act.step];
   if (!obj) return;
   const pl = game.player;
   const px = pl.inCar ? pl.inCar.x : pl.x, py = pl.inCar ? pl.inCar.y : pl.y;
 
+  if (act.def.sunset) game.time = Math.min(game.time, act.day + 0.755 * DAY.length);
+
   let done = false;
   switch (obj.kind) {
     case 'goto':
-      done = Math.hypot(px - obj.at.x, py - obj.at.y) < 90;
+      done = (!obj.drive || !!pl.inCar) && Math.hypot(px - obj.at.x, py - obj.at.y) < 90;
       break;
+    case 'hold': {
+      if (Math.hypot(px - obj.at.x, py - obj.at.y) >= 52) {
+        act.holdT = 0;
+      } else {
+        if (!act.alarm) {
+          act.alarm = true;
+          game.wanted = Math.max(game.wanted, 4);
+          game.heat = Math.max(game.heat, 78);
+          game.audio.sirenOnce?.();
+          game.notify('VAULT ALARM — HOLD YOUR POSITION', '#ff8c83');
+        }
+        act.holdT = (act.holdT ?? 0) + dt;
+      }
+      const left = Math.ceil(Math.max(0, obj.seconds - act.holdT));
+      obj.text = `Hold inside the vault zone · ${left}s`;
+      done = act.holdT >= obj.seconds;
+      break;
+    }
     case 'steal':
       done = act.car && pl.inCar === act.car;
       break;
@@ -201,7 +257,7 @@ export function updateMissions(game, dt) {
       done = act.cars && act.cars.every((c) => c.dead);
       break;
     case 'escape':
-      done = game.wanted === 0;
+      done = game.wanted <= (obj.maxStars ?? 0);
       break;
   }
 
@@ -222,6 +278,10 @@ function completeMission(game, act) {
   m.done.push(act.def.id);
   m.index++;
   m.active = null;
+  if (act.def.id === 'm8') {
+    game.notify('MARISOL VEGA: “The city is yours.”', '#ffe9a3');
+    m.epilogueT = 2;
+  }
   game.lastPay = act.def.pay;
   game.player.money += act.def.pay;
   game.state = 'passed';
@@ -238,7 +298,13 @@ export function missionInteract(game) {
   if (!mk) return;
   const pl = game.player;
   const px = pl.inCar ? pl.inCar.x : pl.x, py = pl.inCar ? pl.inCar.y : pl.y;
-  if (Math.hypot(px - mk.x, py - mk.y) < 120) startMission(game);
+  if (Math.hypot(px - mk.x, py - mk.y) >= 120) return;
+  const def = m.list[m.index];
+  if (def.maxWanted != null && game.wanted > def.maxWanted) {
+    game.notify('LET THE SIRENS FADE BEFORE THE SUNSET DRIVE');
+    return;
+  }
+  startMission(game);
 }
 
 /** Bullets/melee can hit mission crates. Returns true if something was hit. */

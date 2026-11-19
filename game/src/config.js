@@ -36,6 +36,24 @@ export const WORLD = {
 /** Day length in seconds of play for a full cycle; the game starts at golden hour. */
 export const DAY = { length: 480, start: 0.72 };
 
+
+/** Sprint meter, measured in seconds of full-speed running. */
+export const STAMINA = { capacity: 4, drainPerSecond: 1, recoverPerSecond: 0.8, restartAt: 1.25, recoveryDelay: 0.45 };
+
+export const DRIVE_CAMERA = {
+  legacyLead: 60, leadSeconds: 0.27, maxLead: 104, zoomOut: 0.075, response: -1.2 * Math.log(0.001),
+  zoomStartsAt: 0.35, reverseLeadScale: 0.75,
+};
+export const DRIFT_MARKS = {
+  minSpeed: 66, life: 9, rollingLife: 3.5, cap: 600, rollingCap: 380,
+  spacing: 5, rollingSpacing: 15, maxGap: 26, linkTime: 0.1, screechRelease: 0.085,
+};
+export const PARTICLES = { cap: 420, metalSparks: 9, metalDrag: 3.4, impactLightLife: 0.085 };
+export const MARINA_GULLS = {
+  pierFractions: [0.18, 0.45, 0.78], perPier: 4, orbitX: 112, orbitY: 66,
+  callEvery: 9, hearingRange: 480, approachDelay: 0.65, callJitter: 2,
+};
+
 /**
  * Pure day/night math shared by the renderer, headlights and lit windows.
  * t in [0,1): 0 midnight, .25 sunrise, .5 noon, .75 sunset. Returns how golden

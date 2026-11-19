@@ -65,10 +65,46 @@ export function fireWeapon(game, p) {
 // ---------------------------------------------------------------------------
 // Bullet integration: ray-march small steps; first hit wins.
 // ---------------------------------------------------------------------------
+function bulletDamage(b) {
+  // Full damage at close range, easing down to 58% at the range limit.
+  const falloff = clamp((b.gone / b.range - 0.28) / 0.72, 0, 1);
+  return b.dmg * (1 - 0.42 * falloff);
+}
+
+function hitsCar(b, v) {
+  const dx = b.x - v.x, dy = b.y - v.y;
+  const cos = Math.cos(v.dir), sin = Math.sin(v.dir);
+  return Math.abs(dx * cos + dy * sin) <= v.T.L / 2 && Math.abs(dy * cos - dx * sin) <= v.T.W / 2;
+}
+
+function ricochetTick(audio) {
+  const { ctx, master, muted } = audio;
+  if (muted || !master || ctx?.state !== 'running') return;
+  const t = ctx.currentTime;
+  const tone = ctx.createOscillator(), level = ctx.createGain();
+  tone.type = 'triangle';
+  tone.frequency.setValueAtTime(3260, t);
+  tone.frequency.exponentialRampToValueAtTime(1080, t + 0.044);
+  level.gain.setValueAtTime(0.07, t);
+  level.gain.exponentialRampToValueAtTime(0.001, t + 0.048);
+  tone.connect(level).connect(master);
+  tone.start(t);
+  tone.stop(t + 0.05);
+}
+
+function hitCar(game, b, v, dmg) {
+  b.done = true;
+  game.effects.metalSparks(b.x, b.y, clamp(dmg / 22, 0.7, 1.45));
+  const listener = game.player.inCar ?? game.player;
+  if (Math.hypot(b.x - listener.x, b.y - listener.y) < 440) ricochetTick(game.audio);
+  damageVehicle(game, v, dmg, b.byPlayer);
+}
+
 export function updateBullets(game, dt) {
   for (const b of game.bullets) {
     if (b.done) continue;
-    const step = b.speed * dt;
+    const step = Math.min(b.speed * dt, b.range - b.gone);
+    if (step <= 0) { if (b.gone >= b.range) b.done = true; continue; }
     const n = Math.ceil(step / 10);
     const sStep = step / n;
     const sx = Math.cos(b.a) * sStep, sy = Math.sin(b.a) * sStep;
@@ -84,44 +120,50 @@ export function updateBullets(game, dt) {
         }
       }
       if (b.done) break;
+      const dmg = bulletDamage(b);
       if (b.byPlayer) {
         // crates first (they are mission props)
-        if (missionHit(game, b.x, b.y, b.dmg)) { b.done = true; break; }
+        if (missionHit(game, b.x, b.y, dmg)) { b.done = true; break; }
         for (const t of game.peds) {
           if (t.dead || Math.hypot(t.x - b.x, t.y - b.y) > 14) continue;
-          game.damagePed(game, t, b.dmg, true);
+          game.damagePed(game, t, dmg, true);
           b.done = true; game.effects.blood(b.x, b.y); break;
         }
         if (b.done) break;
         for (const o of game.police) {
           if (o.dead || Math.hypot(o.x - b.x, o.y - b.y) > 13) continue;
-          game.damageCop(game, o, b.dmg);
+          game.damageCop(game, o, dmg);
           b.done = true; game.effects.blood(b.x, b.y); break;
         }
         if (b.done) break;
         for (const v of game.vehicles) {
-          if (v.dead || Math.hypot(v.x - b.x, v.y - b.y) > Math.max(v.T.L, v.T.W) * 0.45) continue;
-          damageVehicle(game, v, b.dmg * 0.8, true);
-          b.done = true; game.effects.sparks(b.x, b.y, 4); break;
+          if (v.dead || !hitsCar(b, v)) continue;
+          hitCar(game, b, v, dmg * 0.8);
+          break;
         }
       } else {
-        // Cop/guard bullet: hit the player (or their car) only.
+        // Parked cars provide cover; the player is protected while inside one.
         const pl = game.player;
-        const tx = pl.inCar ? pl.inCar.x : pl.x, ty = pl.inCar ? pl.inCar.y : pl.y;
-        const rad = pl.inCar ? Math.max(pl.inCar.T.L, pl.inCar.T.W) * 0.45 : 13;
-        if (!pl.dead && Math.hypot(tx - b.x, ty - b.y) < rad) {
+        for (const v of game.vehicles) {
+          if (v.dead || !hitsCar(b, v)) continue;
+          hitCar(game, b, v, dmg * 0.6);
+          break;
+        }
+        if (b.done) break;
+        if (!pl.dead && !pl.inCar && Math.hypot(pl.x - b.x, pl.y - b.y) < 13) {
+          damagePlayer(game, dmg);
           b.done = true;
-          if (pl.inCar) damageVehicle(game, pl.inCar, b.dmg * 0.6, false);
-          else damagePlayer(game, b.dmg);
+          break;
         }
         // stray cop bullets can still kill pedestrians — chaos is fine.
         for (const t of game.peds) {
           if (t.dead || t.isGuard || Math.hypot(t.x - b.x, t.y - b.y) > 13) continue;
-          game.damagePed(game, t, b.dmg, false);
+          game.damagePed(game, t, dmg, false);
           b.done = true; break;
         }
       }
     }
+    if (b.gone >= b.range - 0.0001) b.done = true;
   }
   game.bullets = game.bullets.filter((b) => !b.done);
 }

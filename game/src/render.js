@@ -2,7 +2,7 @@
 // then the HUD in screen space. Palette comes from config.js; every district,
 // building and prop is flat-shaded — solid fills, crisp shadows. Night adds
 // lit windows, headlight cones and neon glow.
-import { FIELD, WORLD, PALETTE, DISTRICTS, WEAPONS } from './config.js';
+import { FIELD, WORLD, PALETTE, DISTRICTS, FONT_MONO, KMH, MARINA_GULLS, PARTICLES } from './config.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -21,16 +21,19 @@ export function render(ctx, game) {
   drawGround(ctx, game, view);
   drawRoadPaint(ctx, game, view);
   drawPiers(ctx, game, view);
+  drawFountainPlaza(ctx, game, view);
+  drawTireTracks(ctx, game, view);
   drawProps(ctx, game, view);
   drawBuildings(ctx, game, view);
+  drawLandmarks(ctx, game, view);
   drawPalms(ctx, game, view);
   drawPickups(ctx, game, view);
-  drawTireTracks(ctx, game, view);
   drawVehicles(ctx, game, view);
   drawPedBodies(ctx, game, view, game.peds, false);
   drawPedBodies(ctx, game, view, game.police, true);
   if (!game.player.inCar) drawPlayer(ctx, game, view);
   drawBullets(ctx, game, view);
+  drawGulls(ctx, game, view);
 
   drawWindowTint(ctx, game);
   drawPickupsFront(ctx, game, view);
@@ -58,9 +61,9 @@ function drawGround(ctx, game, view) {
   ctx.fillStyle = PALETTE.sand;
   const sx = toScreen(view, W.SAND_X, 0);
   const sw = (W.WATER_X - W.SAND_X) * view.z;
-  if (sx.sw >= 0) {
-    if (sx.x < FIELD.width && sx.x + sw > 0) ctx.fillRect(Math.max(0, sx.x), 0, Math.min(FIELD.width, sx.x + sw) - Math.max(0, sx.x), FIELD.height);
-  }
+  if (sx.x < FIELD.width && sx.x + sw > 0) ctx.fillRect(Math.max(0, sx.x), 0, Math.min(FIELD.width, sx.x + sw) - Math.max(0, sx.x), FIELD.height);
+  ctx.fillStyle = PALETTE.asphalt;
+  if (sx.x > 0) ctx.fillRect(0, 0, Math.min(FIELD.width, sx.x), FIELD.height);
 
   const x0 = Math.max(0, Math.floor(view.vx / W.CELL) - 1);
   const x1 = Math.min(W.GRID - 1, Math.floor((view.vx + view.vw) / W.CELL) + 1);
@@ -73,12 +76,10 @@ function drawGround(ctx, game, view) {
       const g = toScreen(view, c * W.CELL + W.ROAD, r * W.CELL + W.ROAD);
       const size = W.BLOCK * view.z;
       if (g.x > FIELD.width || g.y > FIELD.height || g.x + size < 0 || g.y + size < 0) continue;
-      ctx.fillStyle = d ? d.ground : PALETTE.sidewalk;
+      ctx.fillStyle = d?.park ? PALETTE.grass : d?.id === 'puerto' ? PALETTE.pavement : PALETTE.sidewalk;
       ctx.fillRect(g.x, g.y, size, size);
       if (game.city.parks.has(`${c},${r}`)) {
-        ctx.fillStyle = PALETTE.park;
-        ctx.fillRect(g.x, g.y, size, size);
-        ctx.fillStyle = PALETTE.sidewalk;
+        ctx.fillStyle = PALETTE.path;
         ctx.fillRect(g.x, g.y + size / 2 - 5 * view.z, size, 10 * view.z);
         ctx.fillRect(g.x + size / 2 - 5 * view.z, g.y, 10 * view.z, size);
       }
@@ -169,11 +170,165 @@ function drawPiers(ctx, game, view) {
   }
 }
 
+const TAU = Math.PI * 2;
+const visible = (s, pad) => s.x >= -pad && s.x <= FIELD.width + pad && s.y >= -pad && s.y <= FIELD.height + pad;
+
+function worldDetail(ctx, s, z, draw) {
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.scale(z, z);
+  draw();
+  ctx.restore();
+}
+
+function disk(ctx, x, y, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+}
+
+function drawFountainPlaza(ctx, game, view) {
+  const p = game.city.fountainPlaza;
+  if (!p) return;
+  const s = toScreen(view, p.x, p.y);
+  if (!visible(s, p.radius * view.z)) return;
+  worldDetail(ctx, s, view.z, () => {
+    const { radius, basin, paving, jets, lamps } = p;
+    disk(ctx, 3, 5, radius, PALETTE.shadow);
+    disk(ctx, 0, 0, radius, '#e4c597');
+    disk(ctx, 0, 0, radius - 5, '#a88c69');
+    for (const { start, end, color } of paving) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius - 6, start + 0.012, end - 0.012);
+      ctx.arc(0, 0, basin, end - 0.012, start + 0.012, true);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.lineWidth = 1.2;
+    disk(ctx, 3, 5, basin, PALETTE.shadow);
+    disk(ctx, 0, 0, basin, '#e8dec6');
+    disk(ctx, 0, 0, basin - 5, '#267e96');
+    const t = game.effects.time;
+    for (let i = 0; i < 3; i++) {
+      const ripple = (t * 0.6 + i / 3) % 1;
+      ctx.strokeStyle = `rgba(183,247,246,${0.58 * (1 - ripple)})`;
+      ctx.beginPath(); ctx.arc(0, 0, 8 + ripple * (basin - 14), 0, TAU); ctx.stroke();
+    }
+    disk(ctx, 0, 0, 8, '#b6dbd6');
+    for (const { x, y, phase } of jets) {
+      const rise = 17 + 3 * Math.sin(t * 3 + phase);
+      ctx.strokeStyle = 'rgba(225,255,252,0.7)';
+      ctx.beginPath(); ctx.moveTo(0, -4); ctx.quadraticCurveTo(x * 0.45, y * 0.35 - rise, x, y); ctx.stroke();
+      disk(ctx, x, y, 1.5, '#d4f5ee');
+    }
+    const night = game.isNight();
+    for (const { x, y } of lamps) {
+      if (night) disk(ctx, x, y, 10, 'rgba(255,211,137,0.26)');
+      disk(ctx, x, y, 3.8, '#6e6453');
+      disk(ctx, x, y, 2, night ? '#fff1aa' : '#bbab8e');
+    }
+  });
+}
+
+function drawLandmarks(ctx, game, view) {
+  const night = game.isNight();
+  for (const b of game.city.billboards) {
+    const s = toScreen(view, b.x, b.y);
+    if (!visible(s, 90)) continue;
+    worldDetail(ctx, s, view.z, () => {
+      const left = -b.w / 2, top = -b.h - 7;
+      ctx.fillStyle = PALETTE.shadow;
+      ctx.fillRect(left + 9, -3, b.w, 13);
+      ctx.fillStyle = '#515265';
+      ctx.fillRect(left + 12, -15, 5, 16); ctx.fillRect(-left - 17, -15, 5, 16);
+      ctx.fillStyle = '#1e1a32';
+      ctx.fillRect(left, top, b.w, b.h);
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 1.5;
+      if (night) { ctx.shadowColor = b.color; ctx.shadowBlur = 13; }
+      ctx.strokeRect(left + 2, top + 2, b.w - 4, b.h - 4);
+      ctx.fillStyle = b.color;
+      ctx.font = `bold 9px ${FONT_MONO}`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(b.label, 7, top + b.h / 2, b.w - 31);
+      drawSignMotif(ctx, b.motif, left + 12, top + b.h / 2);
+      ctx.shadowBlur = 0;
+      const head = Math.floor((game.effects.time * 5 + b.chasePhase * 9) % 9);
+      for (let i = 0; i < 9; i++) {
+        ctx.fillStyle = i === head || i === (head + 8) % 9 ? b.color : '#433745';
+        ctx.fillRect(left + 8 + i * 10, top + b.h + 2, 4, 2);
+      }
+    });
+  }
+  for (const crane of game.city.cranes) {
+    const s = toScreen(view, crane.x, crane.y);
+    if (!visible(s, 140)) continue;
+    worldDetail(ctx, s, view.z, () => drawCrane(ctx, crane, game.effects.time, night));
+  }
+}
+
+function drawSignMotif(ctx, motif, x, y) {
+  ctx.beginPath();
+  if (motif === 'sun') {
+    ctx.arc(x, y + 1, 4, Math.PI, TAU);
+    ctx.moveTo(x - 5, y + 3); ctx.lineTo(x + 5, y + 3);
+  } else if (motif === 'star') {
+    ctx.moveTo(x, y - 5); ctx.lineTo(x + 4, y);
+    ctx.lineTo(x, y + 5); ctx.lineTo(x - 4, y); ctx.closePath();
+  } else {
+    ctx.moveTo(x - 5, y + 1); ctx.quadraticCurveTo(x - 2, y - 5, x, y);
+    ctx.quadraticCurveTo(x + 2, y + 5, x + 5, y - 1);
+  }
+  ctx.stroke();
+}
+
+function drawCrane(ctx, { reach, height, color, phase, number, cargo, apron }, time, night) {
+  const top = -height, depth = 11;
+  ctx.fillStyle = '#4d5559';
+  ctx.fillRect(-apron.w / 2, -apron.h / 2, apron.w, apron.h);
+  ctx.fillStyle = '#d6ad61';
+  for (let x = -apron.w / 2 + 3; x < apron.w / 2 - 4; x += 7) {
+    ctx.fillRect(x, apron.h / 2 - 5, 4, 2);
+  }
+  ctx.fillStyle = PALETTE.shadow;
+  ctx.fillRect(-15, 0, 35, 14);
+  ctx.fillRect(12, 4, reach, 6);
+  ctx.fillStyle = '#35434d';
+  ctx.fillRect(-15, -9, 31, 18);
+  ctx.fillStyle = color;
+  ctx.fillRect(-9, top, 4, height); ctx.fillRect(6, top, 4, height);
+  ctx.fillRect(-25, top, reach + 25, 3);
+  ctx.fillRect(-25, top + depth, reach + 25, 3);
+  ctx.fillRect(-28, top - 2, 15, 17);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    ctx.moveTo(-5, top + height * i / 5); ctx.lineTo(7, top + height * (i + 1) / 5);
+  }
+  ctx.moveTo(0, top + 1);
+  for (let i = 1; i <= 6; i++) ctx.lineTo(reach * i / 6, top + (i % 2 ? depth : 1));
+  ctx.stroke();
+  const trolley = reach * (0.69 + 0.12 * Math.sin(time * 0.6 + phase));
+  ctx.fillStyle = '#273239'; ctx.fillRect(trolley - 5, top + depth, 10, 6);
+  ctx.strokeStyle = '#333c41';
+  const lift = -28 - 9 * Math.sin(time * 0.46 + phase);
+  ctx.beginPath(); ctx.moveTo(trolley, top + depth + 5); ctx.lineTo(trolley, lift - 5);
+  ctx.lineTo(trolley - 9, lift); ctx.moveTo(trolley, lift - 5); ctx.lineTo(trolley + 9, lift); ctx.stroke();
+  ctx.fillStyle = PALETTE.shadow; ctx.fillRect(trolley - 11, 4, 25, 9);
+  ctx.fillStyle = cargo; ctx.fillRect(trolley - 12, lift, 24, 11);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  for (let rib = -9; rib <= 9; rib += 3) ctx.fillRect(trolley + rib, lift + 1, 1, 9);
+  ctx.fillStyle = '#233039'; ctx.fillRect(-10, -8, 21, 15);
+  ctx.fillStyle = '#fee7b7'; ctx.font = `bold 9px ${FONT_MONO}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(`0${number}`, 0, 0);
+  if (night && Math.sin(time * 3 + phase) > 0) disk(ctx, reach, top, 3, '#ff716e');
+}
+
 function drawProps(ctx, game, view) {
   const night = game.isNight();
   for (const p of game.city.props) {
     const s = toScreen(view, p.x, p.y);
-    const sz = Math.max(p.w, p.h) * view.z;
+
     if (s.x < -80 || s.x > FIELD.width + 80 || s.y < -80 || s.y > FIELD.height + 80) continue;
     switch (p.type) {
       case 'hydrant':
@@ -194,18 +349,7 @@ function drawProps(ctx, game, view) {
         ctx.lineWidth = 1.5;
         ctx.strokeRect(s.x, s.y, p.w * view.z, p.h * view.z);
         break;
-      case 'fountain': {
-        ctx.fillStyle = '#9fb8c9';
-        ctx.beginPath(); ctx.arc(s.x, s.y, 28 * view.z, 0, 6.29); ctx.fill();
-        ctx.fillStyle = '#cfe8f4';
-        ctx.beginPath(); ctx.arc(s.x, s.y, 20 * view.z, 0, 6.29); ctx.fill();
-        const t = game.time;
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(s.x + Math.sin(t * 2.2) * 3 * view.z, s.y - (7 + Math.sin(t * 4.4) * 4) * view.z, 4.5 * view.z, 0, 6.29);
-        ctx.fill();
-        break;
-      }
+
       case 'neonSign': {
         const colors = { cyan: '#3fd9ff', magenta: '#ff5ac9', gold: '#ffd24f' };
         const col = colors[p.neonColor ?? 'cyan'];
@@ -323,18 +467,18 @@ function drawPalms(ctx, game, view) {
 }
 
 function drawTireTracks(ctx, game, view) {
-  ctx.fillStyle = 'rgba(30,26,34,1)';
-  for (const t of game.effects.tracks) {
+  ctx.save();
+  ctx.strokeStyle = '#171520';
+  ctx.lineCap = 'round';
+  for (const marks of [game.effects.rollingTracks, game.effects.tracks]) for (const t of marks) {
     const s = toScreen(view, t.x, t.y);
-    if (s.x < -20 || s.x > FIELD.width + 20 || s.y < -20 || s.y > FIELD.height + 20) continue;
-    ctx.save();
-    ctx.translate(s.x, s.y);
-    ctx.rotate(t.a);
-    ctx.globalAlpha = clamp(t.life / 3.5, 0, 1) * 0.14;
-    ctx.fillRect(-4.5 * view.z, -1.8 * view.z, 9 * view.z, 3.6 * view.z);
-    ctx.restore();
+    if (!visible(s, 36)) continue;
+    const from = toScreen(view, t.x0, t.y0);
+    ctx.globalAlpha = Math.min(1, t.life / (t.maxLife * 0.65)) * (t.drift ? 0.68 : 0.12);
+    ctx.lineWidth = (t.drift ? 3.3 : 2.4) * view.z;
+    ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(s.x, s.y); ctx.stroke();
   }
-  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -540,13 +684,57 @@ function drawPickupsFront(ctx, game, view) {
   }
 }
 
+function drawGulls(ctx, game, view) {
+  for (const g of game.effects.gulls) {
+    const s = toScreen(view, g.x, g.y);
+    if (!visible(s, 52)) continue;
+    const z = view.z;
+    ctx.fillStyle = 'rgba(19,45,54,0.22)';
+    ctx.beginPath(); ctx.ellipse(s.x + 8 * z, s.y + 4 * z, 9 * z, 3 * z, g.dir, 0, TAU); ctx.fill();
+    worldDetail(ctx, { x: s.x, y: s.y - g.height * z }, z * g.wingspan, () => {
+      ctx.rotate(g.dir);
+      const span = 9 + 3 * g.flap;
+      ctx.strokeStyle = '#fff5d7';
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(5, 0);
+      for (const side of [-1, 1]) {
+        ctx.moveTo(1, 0); ctx.quadraticCurveTo(3, side * span * 0.55, -3 - g.flap * 2, side * span);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = '#434554';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (const side of [-1, 1]) {
+        ctx.moveTo(-1 - g.flap, side * (span - 2)); ctx.lineTo(-3 - g.flap * 2, side * span);
+      }
+      ctx.stroke();
+    });
+  }
+}
+
 function drawParticles(ctx, game, view) {
+  for (const light of game.effects.impactLights) {
+    const s = toScreen(view, light.x, light.y);
+    if (!visible(s, 28)) continue;
+    const fade = light.life / PARTICLES.impactLightLife;
+    ctx.globalAlpha = 0.22 * fade;
+    disk(ctx, s.x, s.y, light.radius * view.z, '#ffbb76');
+    ctx.globalAlpha = 0.85 * fade;
+    disk(ctx, s.x, s.y, 2.8 * view.z, '#fff1cb');
+  }
   for (const p of game.effects.parts) {
     const s = toScreen(view, p.x, p.y);
     if (s.x < -30 || s.x > FIELD.width + 30 || s.y < -30 || s.y > FIELD.height + 30) continue;
     ctx.globalAlpha = clamp(p.life * 2, 0, 1);
     ctx.fillStyle = p.color;
-    if (p.kind === 'smoke') {
+    if (p.kind === 'metal') {
+      ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = p.size * view.z;
+      ctx.beginPath(); ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x - p.vx * 0.032 * view.z, s.y - p.vy * 0.032 * view.z); ctx.stroke();
+    } else if (p.kind === 'smoke') {
       ctx.beginPath(); ctx.arc(s.x, s.y, p.size * view.z, 0, 6.29); ctx.fill();
     } else {
       const sz = Math.max(1.4, p.size * view.z);
@@ -620,8 +808,19 @@ function drawHud(ctx, game) {
   if (p.inCar) {
     ctx.fillStyle = '#a0d8ff';
     ctx.font = '12px system-ui, sans-serif';
-    const spd = Math.abs(p.inCar.speed) | 0;
+    const spd = KMH(Math.abs(p.inCar.speed));
     ctx.fillText(`${spd} km/h`, 16, 116);
+  } else {
+    const { fraction, available } = game.input.readSprint();
+    if (fraction < 1) bar(ctx, 16, 117, 150, 6, fraction,
+      available ? '#8edcaa' : '#ddaa68', '#263d39', available ? 'SPRINT' : 'RECOVERING');
+  }
+
+  if (game.input.controlsHint) drawControlsHint(ctx, !!p.inCar);
+  else if (game.state === 'play') {
+    ctx.font = `11px ${FONT_MONO}`;
+    ctx.fillStyle = 'rgba(238,241,245,0.78)';
+    ctx.fillText('C · CONTROLS', 16, 145);
   }
 
   const stars = game.wanted;
@@ -658,6 +857,18 @@ function drawHud(ctx, game) {
     ctx.textAlign = 'left';
   }
   ctx.restore();
+}
+
+function drawControlsHint(ctx, driving) {
+  ctx.fillStyle = 'rgba(12,15,24,0.85)';
+  ctx.fillRect(16, 141, 217, 66);
+  ctx.font = `bold 11px ${FONT_MONO}`;
+  ctx.fillStyle = '#ffe9a3';
+  ctx.fillText('CONTROLS · C TO HIDE', 25, 149);
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillStyle = '#e5edfa';
+  ctx.fillText(driving ? 'WASD / Arrows · Drive' : 'WASD / Arrows · Move  |  Shift · Sprint', 25, 167);
+  ctx.fillText(driving ? 'Space · Handbrake  |  R · Exit' : 'R · Enter car  |  E · Interact', 25, 184);
 }
 
 function bar(ctx, x, y, w, h, frac, fill, back, label) {
@@ -759,27 +970,42 @@ function drawMinimap(ctx, game) {
   ctx.restore();
 
   ctx.restore(); // clip
+  drawCompass(ctx, mx + MW - 22, my - 20);
   ctx.restore(); // minimap
+}
 
-  // North indicator
-  ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  ctx.font = '10px system-ui, sans-serif';
-  ctx.textBaseline = 'top';
-  ctx.fillText('N', mx + MW / 2 - 3, my + 4);
-  ctx.beginPath();
-  ctx.moveTo(mx + MW / 2, my + 2);
-  ctx.lineTo(mx + MW / 2 - 3, my + 12);
-  ctx.lineTo(mx + MW / 2 + 3, my + 12);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  ctx.fill();
+function drawCompass(ctx, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  disk(ctx, 0, 0, 20, 'rgba(11,16,28,0.88)');
+  ctx.strokeStyle = 'rgba(214,225,239,0.65)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  for (let i = 0; i < 4; i++) {
+    ctx.save(); ctx.rotate((i + 0.5) * TAU / 4);
+    ctx.fillStyle = '#647482'; ctx.fillRect(-0.5, -17, 1, 3);
+    ctx.restore();
+  }
+  ctx.font = `bold 8px ${FONT_MONO}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ['N', 'E', 'S', 'W'].forEach((label, i) => {
+    const color = i ? '#cadbe7' : '#ffd679';
+    const a = i * Math.PI / 2;
+    ctx.fillStyle = color;
+    ctx.fillText(label, Math.sin(a) * 14, -Math.cos(a) * 14);
+    ctx.save(); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(2.7, -2.7); ctx.lineTo(0, 0); ctx.lineTo(-2.7, -2.7);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  });
+  disk(ctx, 0, 0, 1.6, '#f4f0e6');
+  ctx.restore();
 }
 
 function minimapColor(game, c, r) {
   const d = districtOf(game, c, r);
   if (!d) return '#3a3f4a';
   switch (d.id) {
-    case 'glassrow': return '#4a5058';
+    case 'glass': return '#4a5058';
     case 'bahia': return '#c9b183';
     case 'casco': return '#7a5f46';
     case 'puerto': return '#4f5a68';

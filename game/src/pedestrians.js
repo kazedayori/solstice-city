@@ -1,19 +1,19 @@
 // Pedestrians: sidewalk life — stroll, idle, panic from gunfire and cars.
 import { PEDS, WORLD } from './config.js';
-import { clamp, moveCircle } from './player.js';
+import { clamp, moveCircle, updateKickStagger } from './player.js';
 
 const WALK_COLORS = ['#d94f4f', '#4f7fc9', '#c9c14f', '#8a5fc9', '#4fc98a', '#4f8a8a', '#c98a4f', '#8a8f97'];
 const SKIN = ['#e8b88a', '#c98d5f', '#8a5f3d', '#f0c9a0', '#5f3d26'];
 
 let nextId = 1;
 
-export function createPed(game, x, y) {
-  const t = ['stroller', 'stroller', 'stroller', 'jogger', 'idler'][game.rng.int(0, 4)];
+export function createPed(game, x, y, route = null) {
+  const t = route ? 'jogger' : game.rng.chance(0.24) ? 'idler' : 'stroller';
   return {
     id: nextId++, x, y, r: 10, dir: game.rng.range(0, 6.28),
     color: game.rng.pick(WALK_COLORS), skin: game.rng.pick(SKIN),
     speed: t === 'jogger' ? PEDS.walk * 1.7 : PEDS.walk,
-    name: t,
+    name: t, route, routeIndex: 0, panicVoiced: false,
     hp: t === 'jogger' ? 65 : 40,
     walkT: game.rng.range(0, 6.28),
     panicT: 0, panicX: 0, panicY: 0, dead: false, gone: false,
@@ -36,6 +36,11 @@ function sidewalkPoint(game, c, r) {
 }
 
 function pickTarget(game, p) {
+  if (p.route) {
+    p.target = p.route[p.routeIndex];
+    p.routeIndex = (p.routeIndex + 1) % p.route.length;
+    return;
+  }
   const CELL = WORLD.CELL;
   const c = clamp(Math.floor(p.x / CELL), 0, WORLD.GRID - 1);
   const r = clamp(Math.floor(p.y / CELL), 0, WORLD.GRID - 1);
@@ -55,33 +60,44 @@ export function updatePeds(game, dt) {
   const px = player.inCar ? player.inCar.x : player.x;
   const py = player.inCar ? player.inCar.y : player.y;
 
+  game.panicVoiceCooldown = Math.max(0, (game.panicVoiceCooldown ?? 0) - dt);
   for (const p of game.peds) {
     const d = Math.hypot(p.x - px, p.y - py);
     if (d > PEDS.cull && !p.isTarget && !p.isGuard) { p.gone = true; continue; }
     if (p.dead) {
       p.downT += dt;
       p.bleedingT = Math.max(0, p.bleedingT - dt);
+      if (p.downT > 14 && !p.isTarget && !p.isGuard) p.gone = true;
       continue;
     }
+    if (updateKickStagger(game, p, dt)) continue;
     // Hostile guards (mission m4) chase and shoot the player.
     if (p.isGuard) {
       guardThink(game, p, dt);
       continue;
     }
     if (p.panicT > 0) {
+      if (!p.panicVoiced && d < 360 && game.panicVoiceCooldown <= 0) {
+        p.panicVoiced = true;
+        game.panicVoiceCooldown = 0.95;
+        game.audio.scream();
+      }
       p.panicT -= dt;
       const dx = p.x - p.panicX, dy = p.y - p.panicY;
       const m = Math.hypot(dx, dy) || 1;
+      if (dx || dy) p.dir = Math.atan2(dy, dx);
       moveCircle(game, p, (dx / m) * PEDS.flee * dt, (dy / m) * PEDS.flee * dt);
       p.walkT += dt * 15;
       p.x = clamp(p.x, 8, WORLD.W - 8);
       p.y = clamp(p.y, 8, WORLD.H - 8);
       continue;
     }
-    if (!p.target || game.rng.chance(0.004)) pickTarget(game, p);
+    p.panicVoiced = false;
+    if (!p.target || (!p.route && game.rng.chance(0.004))) pickTarget(game, p);
     const dx = p.target.x - p.x, dy = p.target.y - p.y;
     const m = Math.hypot(dx, dy);
     if (m < 8) {
+      if (p.route) { pickTarget(game, p); continue; }
       p.waitT -= dt;
       if (p.waitT <= 0) { pickTarget(game, p); p.waitT = game.rng.range(0.5, 3); }
       continue;
@@ -121,13 +137,32 @@ export function maintainPeds(game) {
   const player = game.player;
   const px = player.inCar ? player.inCar.x : player.x;
   const py = player.inCar ? player.inCar.y : player.y;
-  let live = 0;
-  for (const p of game.peds) if (!p.dead && !p.isTarget && !p.isGuard) live++;
+  const cap = Math.min(40, PEDS.target);
+  let civs = game.peds.filter((p) => !p.isTarget && !p.isGuard && !p.gone).length;
+  for (const park of game.city.parkBlocks ?? []) {
+    if (civs >= cap) break;
+    if (game.peds.some((p) => p.park === park && !p.dead && !p.gone)) continue;
+    const mid = WORLD.BLOCK / 2;
+    const x = park.x + mid, y = park.y + mid;
+    const d = Math.hypot(x - px, y - py);
+    if (d > 1120 || d < 220) continue;
+    const vertical = (park.c + park.r) % 2 === 0;
+    // Follow the painted cross paths; the fountain block uses one clear arm.
+    const plaza = game.city.fountainPlaza;
+    const near = plaza?.x === x && plaza?.y === y ? 82 : -mid + 12;
+    const route = [near, mid - 9].map((n) => ({ x: x + (vertical ? 0 : n), y: y + (vertical ? n : 0) }));
+    const ped = createPed(game, route[0].x, route[0].y, route);
+    ped.park = park;
+    ped.routeIndex = 1;
+    pickTarget(game, ped);
+    game.peds.push(ped);
+    civs++;
+  }
   let guard = 40;
-  while (live < PEDS.target && guard-- > 0) {
+  while (civs < cap && guard-- > 0) {
     const CELL = WORLD.CELL;
     const ang = game.rng.range(0, 6.28), rad = game.rng.range(700, 1100);
-    const x = clamp(px + Math.cos(ang) * rad, 8, WORLD.W - 8);
+    const x = clamp(px + Math.cos(ang) * rad, 8, WORLD.GRID_W - 8);
     const y = clamp(py + Math.sin(ang) * rad, 8, WORLD.H - 8);
     const c = Math.floor(x / CELL), r = Math.floor(y / CELL);
     const off = WORLD.ROAD * 0.35;
@@ -140,7 +175,7 @@ export function maintainPeds(game) {
     const ped = createPed(game, sx, sy);
     pickTarget(game, ped);
     game.peds.push(ped);
-    live++;
+    civs++;
   }
 }
 
@@ -149,7 +184,8 @@ export function damagePed(game, p, amt, byPlayer) {
   if (p.dead) return;
   p.hp -= amt;
   if (!p.isGuard && !p.isTarget) {
-    p.panicT = 1.6; p.panicX = p.x; p.panicY = p.y;
+    p.panicT = 1.6;
+    p.panicX = p.x - Math.cos(p.dir); p.panicY = p.y - Math.sin(p.dir);
   } else {
     // hostile: they start chasing
     p.panicT = 0;
@@ -172,7 +208,7 @@ export function damagePed(game, p, amt, byPlayer) {
 
 export function scareNearPeds(game, x, y, r) {
   for (const p of game.peds) {
-    if (p.dead || p.isGuard || p.isTarget) continue;
+    if (p.dead || p.gone || p.isGuard || p.isTarget) continue;
     if (Math.hypot(p.x - x, p.y - y) < r) { p.panicT = 2.2; p.panicX = x; p.panicY = y; }
   }
 }

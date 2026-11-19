@@ -1,6 +1,6 @@
 [
-  { "name": "01-drive-cover.jpg", "query": "?shot=drive&seed=2" },
-  { "name": "02-city-night.jpg", "query": "?shot=city&seed=2" },
-  { "name": "03-police-chase.jpg", "query": "?shot=police&seed=2" },
-  { "name": "04-mission-action.jpg", "query": "?shot=mission&seed=2" }
+  { "name": "01-drive-cover.jpg", "query": "?shot=drive&seed=239" },
+  { "name": "02-city-night.jpg", "query": "?shot=city&seed=472" },
+  { "name": "03-police-chase.jpg", "query": "?shot=police&seed=683" },
+  { "name": "04-mission-action.jpg", "query": "?shot=mission&seed=911" }
 ]
