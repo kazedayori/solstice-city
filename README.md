@@ -1,8 +1,18 @@
 # SOLSTICE CITY
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/kazedayori/solstice-city/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/kazedayori/solstice-city/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
 A top-down open-world 2D crime game for the [make.fun](https://make.fun) **gta6-01** competition — a single-page canvas game in plain JavaScript ES modules, no libraries, no network, one directory of static files.
 
-**Play:** `node serve.ts` → open <http://localhost:8080> (offline static server; any static host works). Desktop browser + keyboard.
+## Run it
+
+```sh
+node serve.ts
+```
+
+Then open <http://localhost:8080> (offline static server; any static host works). Desktop browser + keyboard.
 
 ## What it is
 
@@ -72,3 +82,7 @@ serve.ts         offline static server for local play
 ## Entry
 
 Built for make.fun gta6-01 in one recorded session. MIT licensed.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=z5ma7ee6&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards</sub>
