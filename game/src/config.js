@@ -1,61 +1,85 @@
-// Every tuning number and colour in one place. The playfield is a fixed 1280x720 logical area;
-// the renderer scales it to the window, so no rule below depends on the screen size.
+// SOLSTICE CITY tuning. Fixed 1280x720 logical playfield, scaled by the renderer.
 
-export const FIELD = { width: 1280, height: 720, groundY: 664 };
+export const FIELD = { width: 1280, height: 720 };
 
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
 export const STEP = 1 / 60;
 
+export const CITY = {
+  roadWidth: 44,
+  gridSize: 6,
+  waterEdge: 'right',
+  waterWidth: 92,
+};
+
 export const PLAYER = {
-  width: 72,
-  height: 24,
-  speed: 560,
-  invulnerable: 1.5,
+  radius: 14,
+  speed: 260,
+  runSpeed: 340,
+  health: 100,
+  invuln: 1.2,
+  meleeRange: 46,
+  meleeDamage: 22,
+  meleeCooldown: 0.35,
+  gunCooldown: 0.18,
+  bulletSpeed: 900,
+  bulletDamage: 35,
 };
 
-export const LIVES = 3;
-
-export const BLOCK = {
-  minWidth: 40,
-  maxWidth: 110,
-  height: 36,
-  speed: 240,
-  speedPerLevel: 30,
-  speedJitter: 90,
-  interval: 0.55,
-  intervalScale: 0.88,
-  minInterval: 0.14,
-  dodgePoints: 1,
+export const CAR = {
+  compact: { w: 34, h: 58, accel: 520, brake: 700, maxSpeed: 320, turn: 2.6, health: 90, color: '#6ec6ff' },
+  sedan: { w: 38, h: 64, accel: 460, brake: 620, maxSpeed: 360, turn: 2.2, health: 120, color: '#f2994a' },
+  sports: { w: 34, h: 60, accel: 720, brake: 820, maxSpeed: 520, turn: 3.0, health: 80, color: '#eb5757' },
+  van: { w: 44, h: 72, accel: 380, brake: 520, maxSpeed: 280, turn: 1.7, health: 160, color: '#9b9b9b' },
+  police: { w: 38, h: 64, accel: 600, brake: 720, maxSpeed: 420, turn: 2.5, health: 130, color: '#2d6cdf' },
 };
 
-export const COIN = {
-  size: 24,
-  speed: 190,
-  speedPerLevel: 14,
-  interval: 1.4,
-  intervalJitter: 0.8,
-  points: 10,
+export const PED = {
+  speed: 90,
+  health: 40,
+  fleeSpeed: 220,
 };
 
-/** Seconds of play per level, and the last level: speeds and spawn rates stop growing there. */
-export const LEVEL = { seconds: 12, max: 12 };
+export const WANTED = {
+  max: 5,
+  decayDelay: 9,
+  resprayCost: 100,
+};
 
-/** How many falling things can exist at once; the pool is allocated once, at boot. */
-export const POOL_SIZE = 64;
+export const MISSION = {
+  plaza: null,
+};
 
 export const PALETTE = {
-  backdrop: '#11141b',
-  sky: '#1b1f2a',
-  ground: '#2a3040',
-  player: '#4fc3f7',
-  block: '#e5534b',
-  coin: '#f2c94c',
-  panel: '#252b38',
+  backdrop: '#0b1020',
+  skyDay: '#6fb3e8',
+  skyNight: '#0a1030',
+  road: '#2b2f3a',
+  roadLine: '#d9c27a',
+  sidewalk: '#7a7f8a',
+  grass: '#2f6b3f',
+  water: '#1b4f7a',
+  waterShimmer: '#7fd3ff',
+  building: '#3a3f52',
+  buildingAlt: '#4a4058',
+  downtown: '#33384a',
+  old: '#5a4a3a',
+  neon: '#2a1f3a',
+  beach: '#c9b27a',
+  park: '#2d6b3a',
+  harbor: '#2a3a4a',
+  player: '#f7d34a',
+  police: '#2d6cdf',
+  ped: '#e8c9a0',
   text: '#eef1f5',
-  muted: '#8b93a3',
+  muted: '#9aa3b2',
+  panel: 'rgba(10,14,28,0.86)',
+  accent: '#ffcc33',
+  danger: '#ff4d4d',
+  good: '#4dff88',
 };
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
-/** Where the best score is kept between visits (this browser only). */
-export const BEST_KEY = 'block-dodger.best';
+export const SAVE_KEY = 'solstice-save-v1';
+export const BEST_KEY = 'solstice-best';
+export const AUDIO_KEY = 'solstice-mute';
